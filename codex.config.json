@@ -1,0 +1,12 @@
+{
+  "allowedCommands": ["bun", "npm", "npx", "node", "git", "python", "pip", "cargo", "make"],
+  "port": 3000,
+  "tree": {
+    "defaultDepth": 3,
+    "ignore": ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv"]
+  },
+  "command": {
+    "defaultTimeout": 30000,
+    "maxTimeout": 120000
+  }
+}
