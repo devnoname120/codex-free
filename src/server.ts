@@ -10,7 +10,7 @@ import type { AppConfig, ToolDefinition } from "./types.js";
 
 function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.2.0" },
+    { name: "codex-free", version: "0.2.1" },
     { capabilities: { tools: { listChanged: false } } },
   );
 
@@ -33,8 +33,10 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
     }
     try {
       const result = await tool.handler(args ?? {}, config);
+      console.log(`  tool: ${name} -> ok`);
       return { ...result } as const;
     } catch (err: any) {
+      console.log(`  tool: ${name} -> error: ${err.message}`);
       return {
         content: [{ type: "text" as const, text: err.message ?? String(err) }],
         isError: true,
@@ -49,6 +51,13 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
 
 export async function startHttpServer(config: AppConfig): Promise<void> {
   const tools = loadTools();
+
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  const mcpServer = createMcpServer(config, tools);
+  await mcpServer.connect(transport);
 
   const corsHeaders: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
@@ -92,18 +101,9 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
       }
 
       if (url.pathname === "/mcp") {
-        console.log(
-          `[${ts}] ${request.method} ${url.pathname}`,
-        );
+        console.log(`[${ts}] ${request.method} ${url.pathname}`);
 
         if (request.method === "POST") {
-          const transport = new WebStandardStreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-            enableJsonResponse: true,
-          });
-          const mcpServer = createMcpServer(config, tools);
-          await mcpServer.connect(transport);
-
           const response = await transport.handleRequest(request);
           console.log(`[${ts}] -> ${response.status}`);
           return addCorsHeaders(response);
