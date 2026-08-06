@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,20 +25,85 @@ jobs:
       - name: Test
         run: bun test
 
-      - name: Package
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64
+            os: linux
+            arch: x64
+            ext: ""
+            archive: tar.gz
+          - target: bun-linux-arm64
+            os: linux
+            arch: arm64
+            ext: ""
+            archive: tar.gz
+          - target: bun-darwin-x64
+            os: darwin
+            arch: x64
+            ext: ""
+            archive: tar.gz
+          - target: bun-darwin-arm64
+            os: darwin
+            arch: arm64
+            ext: ""
+            archive: tar.gz
+          - target: bun-windows-x64
+            os: windows
+            arch: x64
+            ext: ".exe"
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          tar czf "codex-free-${VERSION}.tar.gz" \
-            --exclude=node_modules \
-            --exclude=.git \
-            --exclude=docs \
-            --exclude=dist \
-            .
+          BINARY_NAME="codex-free${{ matrix.ext }}"
+          bun build --compile --target=${{ matrix.target }} --outfile="${BINARY_NAME}" main.ts
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "ARCHIVE=codex-free-${VERSION}.tar.gz" >> "$GITHUB_ENV"
+          echo "BINARY_NAME=${BINARY_NAME}" >> "$GITHUB_ENV"
+
+      - name: Package tar.gz
+        if: matrix.archive == 'tar.gz'
+        run: |
+          ARCHIVE="codex-free-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          tar czf "${ARCHIVE}" "${BINARY_NAME}" codex.config.json LICENSE README.md
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package zip
+        if: matrix.archive == 'zip'
+        run: |
+          ARCHIVE="codex-free-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          zip "${ARCHIVE}" "${BINARY_NAME}" codex.config.json LICENSE README.md
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-free-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: ${{ env.ARCHIVE }}
+          files: artifacts/*
