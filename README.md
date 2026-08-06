@@ -100,10 +100,9 @@ CLI flags override values from the config file.
    ```bash
    ngrok http 3000
    ```
-3. In ChatGPT, go to **Settings > Connectors > Add MCP Server**.
-4. Enter the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
-
-If `--api-key` is set, add an `Authorization: Bearer <key>` header when configuring the connector.
+3. In ChatGPT, go to **Plugins > + New Plugin**.
+4. Set the **Server URL** to the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
+5. Set **Authentication** to match your `--api-key` setting (or "No Auth" if not set).
 
 ## Security
 

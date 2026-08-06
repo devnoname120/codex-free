@@ -185,6 +185,6 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
   } else {
     console.log(`Auth: disabled (no --api-key)`);
   }
-  console.log(`\nAdd to ChatGPT > Settings > Connectors:`);
-  console.log(`  https://<your-tunnel>/mcp\n`);
+  console.log(`\nAdd to ChatGPT > Plugins > New Plugin:`);
+  console.log(`  Server URL: https://<your-tunnel>/mcp\n`);
 }
