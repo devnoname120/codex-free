@@ -30,7 +30,6 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
     })),
   }));
 
-  // tools/call — dispatch to the matching handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const tool = tools.find((t) => t.name === name);
@@ -38,15 +37,16 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
       return {
         content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
         isError: true,
-      };
+      } as const;
     }
     try {
-      return await tool.handler(args ?? {}, config);
+      const result = await tool.handler(args ?? {}, config);
+      return { ...result } as const;
     } catch (err: any) {
       return {
         content: [{ type: "text" as const, text: err.message ?? String(err) }],
         isError: true,
-      };
+      } as const;
     }
   });
 

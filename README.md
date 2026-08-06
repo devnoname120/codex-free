@@ -2,9 +2,39 @@
 
 *Codex Free (but you still have to buy ChatGPT Plus)*
 
-A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine — read/write files, run shell commands, git operations, search. Built with Bun + TypeScript, using `@modelcontextprotocol/sdk` over Streamable HTTP.
+A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Built with Bun + TypeScript, using `@modelcontextprotocol/sdk` over Streamable HTTP.
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    ChatGPT["ChatGPT Web Pro"]
+    Tunnel["Public Tunnel\n(ngrok / cloudflared)"]
+    Server["Codex Free\nMCP Bridge\n:3000"]
+    Tools["Tool Registry"]
+
+    FS["read_file\nwrite_file\nlist_directory\ntree"]
+    Search["glob\ngrep"]
+    Shell["run_command"]
+    Git["git_status\ngit_push\ngit_commit\ngit_log"]
+    WorkDir[("Project\nDirectory")]
+
+    ChatGPT -- "HTTPS" --> Tunnel
+    Tunnel -- "HTTP\n/mcp" --> Server
+    Server -- "Streamable HTTP\n(MCP Protocol)" --> Tools
+
+    Tools --> FS
+    Tools --> Search
+    Tools --> Shell
+    Tools --> Git
+
+    FS --> WorkDir
+    Search --> WorkDir
+    Shell --> WorkDir
+    Git --> WorkDir
+```
 
 ## Quick start
 
@@ -19,9 +49,9 @@ Server starts on `http://localhost:3000`. MCP endpoint is `/mcp`.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--work-dir` | Yes | — | Project directory the tools operate on |
+| `--work-dir` | Yes | - | Project directory the tools operate on |
 | `--port` | No | `3000` | Server port |
-| `--api-key` | No | — | Bearer token for auth |
+| `--api-key` | No | - | Bearer token for auth |
 | `--config` | No | `./codex.config.json` | Config file path |
 
 ## Tools
@@ -77,9 +107,9 @@ If `--api-key` is set, add an `Authorization: Bearer <key>` header when configur
 
 ## Security
 
-- **Path traversal prevention** — every filesystem tool resolves paths through a guard that rejects anything outside `--work-dir`.
-- **Command allowlist** — `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected.
-- **Optional bearer token auth** — set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Without it, anyone who can reach the port can use the tools.
+- **Path traversal prevention**: every filesystem tool resolves paths through a guard that rejects anything outside `--work-dir`.
+- **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected.
+- **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Without it, anyone who can reach the port can use the tools.
 
 This server has no sandboxing beyond the above. Anyone with access to the tunnel URL and API key can read, write, and execute commands in your work directory. Don't expose it without an API key, and don't point it at directories you don't trust ChatGPT with.
 
@@ -93,4 +123,4 @@ bunx tsc --noEmit  # type check
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
