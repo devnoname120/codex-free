@@ -102,15 +102,17 @@ CLI flags override values from the config file.
    ```
 3. In ChatGPT, go to **Plugins > + New Plugin**.
 4. Set the **Server URL** to the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
-5. Set **Authentication** to match your `--api-key` setting (or "No Auth" if not set).
+5. Set **Authentication** to "No Auth".
+
+> ChatGPT Plugins only support OAuth, No Auth, and Mixed. The `--api-key` option is for non-ChatGPT clients or tunnel-level auth. When using ChatGPT, secure access through your tunnel provider instead (e.g. ngrok IP restrictions, Cloudflare Access).
 
 ## Security
 
 - **Path traversal prevention**: every filesystem tool resolves paths through a guard that rejects anything outside `--work-dir`.
 - **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected.
-- **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Without it, anyone who can reach the port can use the tools.
+- **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
 
-This server has no sandboxing beyond the above. Anyone with access to the tunnel URL and API key can read, write, and execute commands in your work directory. Don't expose it without an API key, and don't point it at directories you don't trust ChatGPT with.
+This server has no sandboxing beyond the above. Anyone with access to the tunnel URL can read, write, and execute commands in your work directory. Don't expose it without tunnel-level access control, and don't point it at directories you don't trust ChatGPT with.
 
 ## Dev commands
 
