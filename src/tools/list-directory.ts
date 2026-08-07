@@ -5,7 +5,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "list_directory",
-  description: "List files and directories in the given path. Returns name, type, and size.",
+  description: "List all files and subdirectories in a directory with their type (file/dir) and size. Returns tab-separated lines. Use this to inspect a specific directory's contents in detail, unlike tree which shows the full hierarchy.",
   inputSchema: {
     type: "object",
     properties: {

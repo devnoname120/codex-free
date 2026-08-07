@@ -3,7 +3,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "read_file",
-  description: "Read the contents of a file at the given path relative to work-dir. Returns content with line numbers.",
+  description: "Read the contents of a file. Path is relative to the project root (work-dir). Output is prefixed with line numbers (e.g. '1\\tconst x = 1'). Use offset/limit to paginate large files. Use this tool to inspect source code, configs, or any text file before making changes.",
   inputSchema: {
     type: "object",
     properties: {

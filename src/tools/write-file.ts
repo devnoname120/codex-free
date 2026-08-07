@@ -5,7 +5,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "write_file",
-  description: "Write content to a file at the given path relative to work-dir. Creates parent directories if needed.",
+  description: "Write or overwrite a file with the given content. Path is relative to the project root (work-dir). Parent directories are created automatically. Use this to create new files, update existing files, or save generated code. Always read the file first before overwriting to avoid losing content.",
   inputSchema: {
     type: "object",
     properties: {

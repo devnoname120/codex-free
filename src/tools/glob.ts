@@ -4,7 +4,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "glob",
-  description: "Find files matching a glob pattern (e.g. **/*.ts) within the work directory.",
+  description: "Find files matching a glob pattern within the project. Supports patterns like **/*.ts (all TypeScript files), src/**/*.test.ts (test files in src), *.json (JSON files in root). Returns a sorted list of matching file paths. Use this to discover files before reading them, or to understand the project structure.",
   inputSchema: {
     type: "object",
     properties: {

@@ -5,7 +5,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "tree",
-  description: "Show directory tree as ASCII art. Ignores node_modules, .git, etc. by default.",
+  description: "Show the project directory structure as an ASCII tree. Automatically ignores common directories (node_modules, .git, dist, __pycache__). Use this first to understand the project layout before diving into specific files. Limit depth to avoid overwhelming output on large projects.",
   inputSchema: {
     type: "object",
     properties: {

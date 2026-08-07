@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "git_push",
-  description: "Push commits to a remote repository. Defaults to 'origin' and current branch.",
+  description: "Push local commits to a remote git repository. Defaults to pushing the current branch to 'origin'. Use this after git_commit to publish changes. Returns the push output including any remote messages.",
   inputSchema: {
     type: "object",
     properties: {

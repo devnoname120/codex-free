@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "git_commit",
-  description: "Create a git commit with the given message. Optionally stage all changes first with the 'all' flag.",
+  description: "Create a git commit with the given message. Set all=true to automatically stage all tracked modified files before committing (equivalent to git commit -a). Without all=true, only previously staged files (via git add) will be committed. Use git_status first to see what will be committed.",
   inputSchema: {
     type: "object",
     properties: {

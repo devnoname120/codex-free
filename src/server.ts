@@ -10,7 +10,7 @@ import type { AppConfig, ToolDefinition } from "./types.js";
 
 function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.3.0" },
+    { name: "codex-free", version: "0.3.1" },
     { capabilities: { tools: { listChanged: false } } },
   );
 

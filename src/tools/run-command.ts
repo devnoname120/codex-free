@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "run_command",
-  description: "Execute a command in the work directory. Only commands in the configured allowlist are permitted.",
+  description: "Execute a shell command in the project directory. Only allowlisted commands are permitted (e.g. bun, npm, node, git, python, cargo, make). Returns stdout, stderr, and exit code. Use this to run tests, install dependencies, build projects, or execute scripts. Times out after 30s by default.",
   inputSchema: {
     type: "object",
     properties: {

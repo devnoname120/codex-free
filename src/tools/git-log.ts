@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "git_log",
-  description: "Show recent git commit history. Returns formatted log with hash, author, date, and message.",
+  description: "Show recent git commit history of the project. Returns commit hash, author, date, and message for each commit. Use oneline=true for a compact view. Useful to understand recent changes, find when a bug was introduced, or review what has been done.",
   inputSchema: {
     type: "object",
     properties: {

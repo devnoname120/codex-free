@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "git_status",
-  description: "Show git status of the work directory. Returns parsed list of changed files with status codes.",
+  description: "Show the current git status of the project. Returns a list of modified, added, deleted, and untracked files with their status codes (M=modified, A=added, D=deleted, ??=untracked). Use this before committing to see what has changed, or to understand the current state of the working tree.",
   inputSchema: {
     type: "object",
     properties: {},
