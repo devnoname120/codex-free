@@ -10,7 +10,7 @@ import type { AppConfig, ToolDefinition } from "./types.js";
 
 function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.2.1" },
+    { name: "codex-free", version: "0.3.0" },
     { capabilities: { tools: { listChanged: false } } },
   );
 
@@ -19,6 +19,7 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
     })),
   }));
 
@@ -52,12 +53,10 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
 export async function startHttpServer(config: AppConfig): Promise<void> {
   const tools = loadTools();
 
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-  const mcpServer = createMcpServer(config, tools);
-  await mcpServer.connect(transport);
+  const sessions = new Map<
+    string,
+    { transport: WebStandardStreamableHTTPServerTransport; server: Server }
+  >();
 
   const corsHeaders: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
@@ -101,23 +100,63 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
       }
 
       if (url.pathname === "/mcp") {
-        console.log(`[${ts}] ${request.method} ${url.pathname}`);
+        const sessionId = request.headers.get("mcp-session-id");
+        console.log(`[${ts}] ${request.method} /mcp session=${sessionId ?? "none"}`);
 
         if (request.method === "POST") {
+          if (sessionId && sessions.has(sessionId)) {
+            const session = sessions.get(sessionId)!;
+            const response = await session.transport.handleRequest(request);
+            console.log(`[${ts}] -> ${response.status} (existing)`);
+            return addCorsHeaders(response);
+          }
+
+          const transport = new WebStandardStreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            onsessioninitialized: (id) => {
+              console.log(`[${ts}] Session created: ${id}`);
+              sessions.set(id, { transport, server: mcpServer });
+            },
+            enableJsonResponse: true,
+          });
+          const mcpServer = createMcpServer(config, tools);
+          await mcpServer.connect(transport);
+
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              console.log(`[${ts}] Session closed: ${transport.sessionId}`);
+              sessions.delete(transport.sessionId);
+            }
+          };
+
           const response = await transport.handleRequest(request);
-          console.log(`[${ts}] -> ${response.status}`);
+          console.log(`[${ts}] -> ${response.status} (new)`);
           return addCorsHeaders(response);
         }
 
         if (request.method === "GET") {
-          return new Response("SSE not supported in stateless mode", {
-            status: 405,
+          if (sessionId && sessions.has(sessionId)) {
+            const session = sessions.get(sessionId)!;
+            const response = await session.transport.handleRequest(request);
+            return addCorsHeaders(response);
+          }
+          return new Response("Session not found", {
+            status: 404,
             headers: corsHeaders,
           });
         }
 
         if (request.method === "DELETE") {
-          return new Response(null, { status: 200, headers: corsHeaders });
+          if (sessionId && sessions.has(sessionId)) {
+            const session = sessions.get(sessionId)!;
+            const response = await session.transport.handleRequest(request);
+            sessions.delete(sessionId);
+            return addCorsHeaders(response);
+          }
+          return new Response("Session not found", {
+            status: 404,
+            headers: corsHeaders,
+          });
         }
       }
 

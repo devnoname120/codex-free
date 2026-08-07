@@ -7,6 +7,12 @@ export default {
     type: "object",
     properties: {},
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Changed file count header followed by git porcelain status lines (e.g. ' M file.ts')" },
+    },
+  },
   handler: async (_args, config) => {
     try {
       const proc = Bun.spawn(["git", "status", "--porcelain"], {

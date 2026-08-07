@@ -13,6 +13,12 @@ export default {
     },
     required: ["pattern"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Newline-separated list of matched file paths relative to work-dir" },
+    },
+  },
   handler: async (args, config) => {
     try {
       const basePath = args.path

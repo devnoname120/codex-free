@@ -12,6 +12,12 @@ export default {
     },
     required: ["command"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Combined stdout/stderr output followed by exit code" },
+    },
+  },
   handler: async (args, config) => {
     const command = args.command as string;
     const cmdArgs = (args.args as string[]) ?? [];

@@ -14,6 +14,12 @@ export default {
     },
     required: ["pattern"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Grep results as 'file:line:match' lines with optional context" },
+    },
+  },
   handler: async (args, config) => {
     const searchPath = args.path
       ? resolveSafePath(args.path as string, config.workDir)

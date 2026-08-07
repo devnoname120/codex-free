@@ -13,6 +13,12 @@ export default {
       depth: { type: "number", description: "Max depth to traverse. Default: 3" },
     },
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "ASCII tree representation of directory structure" },
+    },
+  },
   handler: async (args, config) => {
     try {
       const rootPath = args.path

@@ -12,6 +12,12 @@ export default {
       path: { type: "string", description: "Directory path relative to work-dir. Default: root" },
     },
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Tab-separated lines of 'type\\tsize\\tname' for each directory entry" },
+    },
+  },
   handler: async (args, config) => {
     try {
       const dirPath = args.path

@@ -14,6 +14,12 @@ export default {
     },
     required: ["path", "content"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Confirmation message with bytes written and file path" },
+    },
+  },
   handler: async (args, config) => {
     try {
       const filePath = resolveSafePath(args.path as string, config.workDir);

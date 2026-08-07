@@ -13,6 +13,12 @@ export default {
     },
     required: ["path"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "File content with line numbers prefixed (e.g. '1\\tline text')" },
+    },
+  },
   handler: async (args, config) => {
     try {
       const filePath = resolveSafePath(args.path as string, config.workDir);

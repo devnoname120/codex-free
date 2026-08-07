@@ -11,6 +11,12 @@ export default {
     },
     required: ["message"],
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Git commit output text including branch, hash, and summary" },
+    },
+  },
   handler: async (args, config) => {
     const message = args.message as string;
     const commitArgs = ["git", "commit"];

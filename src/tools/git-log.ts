@@ -10,6 +10,12 @@ export default {
       oneline: { type: "boolean", description: "Show compact one-line format. Default: false" },
     },
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Formatted git log output with commit hash, author, date, and message" },
+    },
+  },
   handler: async (args, config) => {
     const count = typeof args.count === "number" ? args.count : 10;
     const logArgs = ["git", "log", `--max-count=${count}`];

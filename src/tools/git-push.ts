@@ -10,6 +10,12 @@ export default {
       branch: { type: "string", description: "Branch name. Default: current branch" },
     },
   },
+  outputSchema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "Git push output text" },
+    },
+  },
   handler: async (args, config) => {
     const remote = (args.remote as string) ?? "origin";
     const cmdArgs = ["git", "push", remote];
