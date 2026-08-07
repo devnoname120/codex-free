@@ -95,15 +95,16 @@ CLI flags override values from the config file.
 
 ## Connecting to ChatGPT
 
-1. Start the server: `bun run main.ts --work-dir /path/to/your/project`
-2. Expose it with a tunnel (ngrok, Cloudflare Tunnel, etc.):
+1. In ChatGPT, go to **Settings > Security and login** and enable **Developer mode**.
+2. Start the server: `bun run main.ts --work-dir /path/to/your/project`
+3. Expose it with a tunnel (ngrok, Cloudflare Tunnel, etc.):
    ```bash
    ngrok http 3000
    ```
-3. In ChatGPT, go to **Plugins > + New Plugin**.
-4. Set the **Server URL** to the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
-5. Set **Authentication** to "No Auth".
-6. After creating the plugin, go to **Permissions** and set it to **Allow all actions** so ChatGPT can call tools without asking for confirmation each time.
+4. In ChatGPT, go to **Plugins > + New Plugin**.
+5. Set the **Server URL** to the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
+6. Set **Authentication** to "No Auth".
+7. After creating the plugin, go to **Permissions** and set it to **Allow all actions** so ChatGPT can call tools without asking for confirmation each time.
 
 > ChatGPT Plugins only support OAuth, No Auth, and Mixed. The `--api-key` option is for non-ChatGPT clients or tunnel-level auth. When using ChatGPT, secure access through your tunnel provider instead (e.g. ngrok IP restrictions, Cloudflare Access).
 
