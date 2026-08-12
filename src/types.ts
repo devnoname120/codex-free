@@ -112,6 +112,26 @@ export interface ExecConfig {
   defaultShell?: string;
 }
 
+/**
+ * Governs AGENTS.md discovery. Every field is optional and mirrors a Codex
+ * setting of the same meaning; see `src/project-doc.ts` for the defaults.
+ */
+export interface ProjectDocConfig {
+  /**
+   * Byte budget shared across every discovered doc (Codex's
+   * `project_doc_max_bytes`, default 32768). Zero turns discovery off.
+   */
+  maxBytes?: number;
+  /** Filenames tried after `AGENTS.override.md` and `AGENTS.md` in each directory. */
+  fallbackFilenames?: string[];
+  /**
+   * Files or directories whose presence marks the project root, which is where
+   * the walk up from the work directory stops. Defaults to `[".git"]`; an empty
+   * list confines discovery to the work directory itself.
+   */
+  rootMarkers?: string[];
+}
+
 export interface AppConfig {
   workDir: string;
   apiKey?: string;
@@ -120,6 +140,7 @@ export interface AppConfig {
   tree: { defaultDepth: number; ignore: string[] };
   command: { defaultTimeout: number; maxTimeout: number };
   exec: ExecConfig;
+  projectDoc?: ProjectDocConfig;
 }
 
 export interface CliArgs {

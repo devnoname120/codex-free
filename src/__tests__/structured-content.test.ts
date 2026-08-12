@@ -85,6 +85,7 @@ describe("registry output schemas", () => {
       "clock_curr_time",
       "exec_command",
       "get_environment",
+      "get_project_doc",
       "write_stdin",
     ]);
   });

