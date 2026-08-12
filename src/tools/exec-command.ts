@@ -32,13 +32,32 @@ export function renderUnifiedExecOutput(result: UnifiedExecOutput): string {
   return JSON.stringify(result, null, 2);
 }
 
-export default {
-  name: "exec_command",
-  description: `Runs a command in a shell and returns its output. Use this for anything the structured tools do not cover: build pipelines, test runners, package managers, interactive REPLs.
+const BASE_DESCRIPTION = `Runs a command in a shell and returns its output. Use this for anything the structured tools do not cover: build pipelines, test runners, package managers, interactive REPLs.
 
 If the command finishes within yield_time_ms the full result is returned with its exit_code. If it is still running, a session_id comes back instead — pass that to write_stdin to send input, poll for more output, or wait for it to finish. That makes long-running and interactive processes (dev servers, REPLs, prompts asking for confirmation) workable in a single session.
 
-Commands run through the platform shell, so pipes, redirection and && chains work. Note this bridge runs commands with plain pipes, not a PTY.`,
+Commands run through the platform shell, so pipes, redirection and && chains work. Note this bridge runs commands with plain pipes, not a PTY.`;
+
+/**
+ * Codex appends these rules to the `exec_command` description on Windows
+ * (shell_spec.rs::windows_shell_guidance). They carry more weight here than
+ * they do there: Codex backs them with a sandbox, this bridge does not, so the
+ * description is the only thing standing between a mis-composed delete and the
+ * filesystem.
+ */
+const WINDOWS_SHELL_GUIDANCE = `Windows safety rules:
+- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to \`cmd /c\`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as \`Remove-Item\` / \`Move-Item\` with \`-LiteralPath\`, and avoid string-built shell commands for file operations.
+- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
+- When using \`Start-Process\` to launch a background helper or service, pass \`-WindowStyle Hidden\` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.`;
+
+export const EXEC_COMMAND_DESCRIPTION =
+  process.platform === "win32"
+    ? `${BASE_DESCRIPTION}\n\n${WINDOWS_SHELL_GUIDANCE}`
+    : BASE_DESCRIPTION;
+
+export default {
+  name: "exec_command",
+  description: EXEC_COMMAND_DESCRIPTION,
   inputSchema: {
     type: "object",
     properties: {
@@ -116,6 +135,7 @@ Commands run through the platform shell, so pipes, redirection and && chains wor
 
       return {
         content: [{ type: "text", text: renderUnifiedExecOutput(result) }],
+        structuredContent: { ...result },
         isError: exited && execSession.exitCode !== 0 ? true : undefined,
       };
     } catch (err: any) {

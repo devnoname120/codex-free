@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, readFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import applyPatch from "../apply-patch.js";
-import execCommand from "../exec-command.js";
+import execCommand, { EXEC_COMMAND_DESCRIPTION, UNIFIED_EXEC_OUTPUT_SCHEMA } from "../exec-command.js";
 import writeStdin from "../write-stdin.js";
 import viewImage from "../view-image.js";
 import updatePlan from "../update-plan.js";
@@ -160,6 +160,26 @@ describe("exec_command", () => {
     expect(payload.exit_code).toBe(0);
     expect(payload.session_id).toBeUndefined();
     expect(typeof payload.wall_time_seconds).toBe("number");
+    // The JSON text and the structured payload are two views of one result.
+    expect(result.structuredContent).toEqual(payload);
+  });
+
+  test("structuredContent carries only keys the output schema declares", async () => {
+    const result = await execCommandTool.handler({ cmd: "echo hi" }, makeConfig(workDir), session);
+    const declared = Object.keys(UNIFIED_EXEC_OUTPUT_SCHEMA.properties);
+    expect(Object.keys(result.structuredContent!).every((key) => declared.includes(key))).toBe(true);
+    for (const key of UNIFIED_EXEC_OUTPUT_SCHEMA.required) {
+      expect(result.structuredContent![key]).toBeDefined();
+    }
+  });
+
+  test("describes the Windows shell rules only on Windows", () => {
+    const mentionsWindowsRules = EXEC_COMMAND_DESCRIPTION.includes("Windows safety rules:");
+    expect(mentionsWindowsRules).toBe(process.platform === "win32");
+    if (mentionsWindowsRules) {
+      expect(EXEC_COMMAND_DESCRIPTION).toContain("-LiteralPath");
+      expect(EXEC_COMMAND_DESCRIPTION).toContain("-WindowStyle Hidden");
+    }
   });
 
   test("returns a session_id when the command outlives yield_time_ms", async () => {
@@ -180,6 +200,7 @@ describe("exec_command", () => {
       session,
     );
     expect(JSON.parse(textOf(echoed)).output).toContain("ping");
+    expect(echoed.structuredContent).toEqual(JSON.parse(textOf(echoed)));
   }, 15000);
 
   test("reports a non-zero exit code as an error", async () => {
@@ -361,6 +382,9 @@ describe("clock tools", () => {
   test("clock_curr_time returns a UTC timestamp", async () => {
     const result = await clockCurrTimeTool.handler({}, makeConfig(workDir), session);
     expect(textOf(result)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/);
+    // Its output schema requires `current_time`, so it cannot fall back to the
+    // generic `{ content }` the server derives for other tools.
+    expect(result.structuredContent).toEqual({ current_time: textOf(result) });
   });
 
   test("clock_sleep waits and reports elapsed time", async () => {

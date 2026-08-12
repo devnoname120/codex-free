@@ -100,6 +100,7 @@ Pass the session_id returned by exec_command. Leave chars empty to poll without 
 
       return {
         content: [{ type: "text", text: renderUnifiedExecOutput(result) }],
+        structuredContent: { ...result },
         isError: exited && execSession.exitCode !== 0 ? true : undefined,
       };
     } catch (err: any) {

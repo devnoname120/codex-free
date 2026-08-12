@@ -22,6 +22,12 @@ export type ToolContent =
 export interface ToolResult {
   content: ToolContent[];
   isError?: boolean;
+  /**
+   * Machine-readable form of `content`, matching the tool's `outputSchema`.
+   * Only tools whose schema is not the usual `{ content: string }` need to set
+   * this; the server fills in that default (see `withStructuredContent`).
+   */
+  structuredContent?: Record<string, unknown>;
 }
 
 // ─── Session state ─────────────────────────────────────────────────────

@@ -29,6 +29,10 @@ export default {
     additionalProperties: false,
   },
   handler: async () => {
-    return { content: [{ type: "text", text: formatUtc(new Date()) }] };
+    const currentTime = formatUtc(new Date());
+    return {
+      content: [{ type: "text", text: currentTime }],
+      structuredContent: { current_time: currentTime },
+    };
   },
 } satisfies ToolDefinition;

@@ -6,9 +6,34 @@ import {
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { checkAuth } from "./auth.js";
 import { loadTools } from "./registry.js";
-import type { AppConfig, ToolDefinition } from "./types.js";
+import type { AppConfig, ToolDefinition, ToolResult } from "./types.js";
 import { createSessionState } from "./types.js";
 import { disposeExecSessions } from "./exec-sessions.js";
+
+/**
+ * Fills in the `structuredContent` the MCP spec expects from any tool that
+ * advertises an `outputSchema`.
+ *
+ * Most tools here use the repo's `{ content: string }` schema, for which the
+ * text they already return *is* the structured form — so the default is applied
+ * once here instead of in every handler. Tools with a different schema shape
+ * (the unified-exec pair, `clock_curr_time`) build their own and pass through.
+ * Errors are left alone: an error message would not satisfy the schema, and the
+ * spec exempts `isError` results from it.
+ */
+export function withStructuredContent(
+  tool: ToolDefinition,
+  result: ToolResult,
+): ToolResult {
+  if (!tool.outputSchema || result.structuredContent || result.isError) {
+    return result;
+  }
+  const text = result.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  return { ...result, structuredContent: { content: text } };
+}
 
 function createMcpServer(
   config: AppConfig,
@@ -16,7 +41,7 @@ function createMcpServer(
   session: ReturnType<typeof createSessionState>,
 ): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.4.0" },
+    { name: "codex-free", version: "0.4.1" },
     { capabilities: { tools: { listChanged: false } } },
   );
 
@@ -41,7 +66,7 @@ function createMcpServer(
     try {
       const result = await tool.handler(args ?? {}, config, session);
       console.log(`  tool: ${name} -> ok`);
-      return { ...result } as const;
+      return { ...withStructuredContent(tool, result) } as const;
     } catch (err: any) {
       console.log(`  tool: ${name} -> error: ${err.message}`);
       return {

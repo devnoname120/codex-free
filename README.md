@@ -104,6 +104,8 @@ Two deliberate differences from Codex:
 
 `clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
+Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object and `clock_curr_time` returns `{ current_time }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
+
 All paths are resolved relative to `--work-dir`.
 
 ## Config file
