@@ -17,6 +17,7 @@ import viewImage from "./tools/view-image.js";
 import updatePlan from "./tools/update-plan.js";
 import clockCurrTime from "./tools/clock-curr-time.js";
 import clockSleep from "./tools/clock-sleep.js";
+import getEnvironment from "./tools/get-environment.js";
 
 const ALL_TOOLS: ToolDefinition[] = [
   readFile,
@@ -40,6 +41,9 @@ const ALL_TOOLS: ToolDefinition[] = [
   updatePlan,
   clockCurrTime,
   clockSleep,
+  // Not a Codex tool. Codex tells its model the OS and shell through an
+  // <environment_context> message, which an MCP server has no way to send.
+  getEnvironment,
 ];
 
 export function loadTools(): ToolDefinition[] {

@@ -61,21 +61,52 @@ export function truncateOutput(
   };
 }
 
-/** Picks the shell used to interpret a command string. */
+export type ShellType = "posix" | "powershell" | "cmd";
+
+/**
+ * Classifies a shell binary by name. Both separators are handled explicitly
+ * because a Windows path can arrive on a POSIX host and vice versa — Git Bash
+ * reports `$SHELL` as `C:\Program Files\Git\bin\bash.exe`.
+ */
+export function shellTypeOf(bin: string): ShellType {
+  const base = bin.split(/[\\/]/).pop()!.replace(/\.exe$/i, "").toLowerCase();
+  if (base === "powershell" || base === "pwsh") return "powershell";
+  if (base === "cmd") return "cmd";
+  return "posix";
+}
+
+/**
+ * The shell used when the caller names none.
+ *
+ * `$SHELL` wins on every platform, so launching the server from Git Bash gets
+ * bash rather than PowerShell. Windows falls back to PowerShell, matching Codex.
+ */
+export function defaultShellBin(): string {
+  if (process.env.SHELL) return process.env.SHELL;
+  return process.platform === "win32" ? "powershell.exe" : "/bin/sh";
+}
+
+/**
+ * Builds the argv prefix that makes `bin` execute a command string.
+ *
+ * Mirrors Codex's `Shell::derive_exec_args` (codex-rs/core/src/shell.rs): the
+ * flag follows the shell, not the host. Picking it by platform instead meant
+ * `shell: "bash"` on Windows was invoked as `bash -NoProfile -Command`.
+ */
 export function resolveShell(explicit?: string): string[] {
-  if (explicit) {
-    return process.platform === "win32"
-      ? [explicit, "-NoProfile", "-Command"]
-      : [explicit, "-c"];
+  const bin = explicit || defaultShellBin();
+  switch (shellTypeOf(bin)) {
+    case "powershell":
+      return [bin, "-NoProfile", "-Command"];
+    case "cmd":
+      return [bin, "/c"];
+    case "posix":
+      return [bin, "-c"];
   }
-  if (process.platform === "win32") {
-    return ["powershell.exe", "-NoProfile", "-Command"];
-  }
-  return [process.env.SHELL || "/bin/sh", "-c"];
 }
 
 function isPowerShell(bin: string): boolean {
-  return /(^|[\\/])(powershell|pwsh)(\.exe)?$/i.test(bin);
+  return shellTypeOf(bin) === "powershell";
 }
 
 /**
@@ -113,12 +144,17 @@ export function startExecSession(
     );
   }
 
-  const [bin, ...shellArgs] = resolveShell(shell);
+  const [bin, ...shellArgs] = resolveShell(shell ?? config.exec.defaultShell);
   const proc = Bun.spawn([bin!, ...shellArgs, wrapForShell(cmd, bin!)], {
     cwd,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    // POSIX only: setsid() makes the shell its own process-group leader so the
+    // whole tree can be signalled at once (see killExecSession). Windows uses
+    // taskkill's parent-child walk instead, and detaching there would cost the
+    // child its console.
+    detached: process.platform !== "win32",
   });
 
   const session: ExecSession = {
@@ -205,18 +241,31 @@ export function reapFinishedSessions(state: SessionState): void {
  * Kills a session's process along with anything it started.
  *
  * The process we hold is the shell, not the command the caller asked for, so
- * signalling it alone would leave the real work running as an orphan. On
- * Windows there is no process group to signal, hence `taskkill /T`.
+ * signalling it alone would leave the real work running as an orphan — a
+ * pipeline like `npm start | tee log` keeps both halves alive. Each platform
+ * needs its own way to reach the children: POSIX signals the process group the
+ * shell leads, Windows walks the parent-child tree with `taskkill /T`.
  */
 export function killExecSession(session: ExecSession): void {
-  if (process.platform === "win32" && session.proc.pid) {
-    try {
-      Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(session.proc.pid)], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-    } catch {
-      // taskkill is missing or the tree is already gone; fall through to kill().
+  const pid = session.proc.pid;
+  if (pid) {
+    if (process.platform === "win32") {
+      try {
+        Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(pid)], {
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch {
+        // taskkill is missing or the tree is already gone; fall through to kill().
+      }
+    } else {
+      try {
+        // Negative pid means "the whole process group", which the shell leads
+        // because it was spawned detached.
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // No such group, or it exited between the check and the signal.
+      }
     }
   }
   try {

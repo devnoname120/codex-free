@@ -81,6 +81,11 @@ describe("registry output schemas", () => {
       .map((tool) => tool.name)
       .sort();
 
-    expect(needsOwnStructuredContent).toEqual(["clock_curr_time", "exec_command", "write_stdin"]);
+    expect(needsOwnStructuredContent).toEqual([
+      "clock_curr_time",
+      "exec_command",
+      "get_environment",
+      "write_stdin",
+    ]);
   });
 });

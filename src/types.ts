@@ -3,6 +3,12 @@ export interface ToolDefinition {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  /**
+   * Description to advertise instead of `description`, for tools whose wording
+   * depends on runtime configuration. `exec_command` uses it to name the shell
+   * it will actually launch, which is not knowable at module load.
+   */
+  describe?: (config: AppConfig) => string;
   handler: (
     args: Record<string, unknown>,
     config: AppConfig,
@@ -97,6 +103,13 @@ export interface ExecConfig {
   extraAllowedCommands: string[];
   /** Upper bound on concurrently resident exec sessions. */
   maxSessions: number;
+  /**
+   * Shell binary `exec_command` launches when a call names none. Defaults to
+   * `$SHELL`, then PowerShell on Windows and `/bin/sh` elsewhere. Set this when
+   * the shell the server was started from is not the one commands should run
+   * in — launching from Git Bash but wanting PowerShell, say.
+   */
+  defaultShell?: string;
 }
 
 export interface AppConfig {

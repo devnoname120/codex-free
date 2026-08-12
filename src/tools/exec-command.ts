@@ -6,13 +6,15 @@ import {
   EXEC_MIN_YIELD_MS,
   clamp,
   generateChunkId,
+  resolveShell,
+  shellTypeOf,
   startExecSession,
   truncateOutput,
   yieldOutput,
 } from "../exec-sessions.js";
 import { resolveSafePath } from "../safe-path.js";
-import type { ToolDefinition } from "../types.js";
-import type { UnifiedExecOutput } from "../exec-sessions.js";
+import type { AppConfig, ToolDefinition } from "../types.js";
+import type { ShellType, UnifiedExecOutput } from "../exec-sessions.js";
 
 export const UNIFIED_EXEC_OUTPUT_SCHEMA = {
   type: "object",
@@ -55,9 +57,28 @@ export const EXEC_COMMAND_DESCRIPTION =
     ? `${BASE_DESCRIPTION}\n\n${WINDOWS_SHELL_GUIDANCE}`
     : BASE_DESCRIPTION;
 
+const SYNTAX_HINT: Record<ShellType, string> = {
+  powershell:
+    "Commands are PowerShell, so `ls`, `cat` and `rm` are cmdlet aliases with different flags — prefer `Get-ChildItem`, `Get-Content`, `Remove-Item`, and `$env:FOO='bar'` for environment variables.",
+  cmd: "Commands are cmd.exe, so use `dir`, `%VAR%` and `copy` rather than POSIX equivalents.",
+  posix: "Commands are POSIX shell, so the usual utilities and syntax apply.",
+};
+
+/**
+ * The static description names no shell, because which one runs depends on
+ * `$SHELL` and config that is only known once the server starts. Naming it here
+ * saves the model a `get_environment` call and a wrong first guess.
+ */
+export function describeExecCommand(config: AppConfig): string {
+  const [bin] = resolveShell(config.exec.defaultShell);
+  const type = shellTypeOf(bin!);
+  return `${EXEC_COMMAND_DESCRIPTION}\n\nThis server runs commands with: ${bin} (${type}). ${SYNTAX_HINT[type]}`;
+}
+
 export default {
   name: "exec_command",
   description: EXEC_COMMAND_DESCRIPTION,
+  describe: describeExecCommand,
   inputSchema: {
     type: "object",
     properties: {

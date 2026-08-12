@@ -3,7 +3,11 @@ import { mkdtemp, rm, writeFile, readFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import applyPatch from "../apply-patch.js";
-import execCommand, { EXEC_COMMAND_DESCRIPTION, UNIFIED_EXEC_OUTPUT_SCHEMA } from "../exec-command.js";
+import execCommand, {
+  EXEC_COMMAND_DESCRIPTION,
+  UNIFIED_EXEC_OUTPUT_SCHEMA,
+  describeExecCommand,
+} from "../exec-command.js";
 import writeStdin from "../write-stdin.js";
 import viewImage from "../view-image.js";
 import updatePlan from "../update-plan.js";
@@ -181,6 +185,32 @@ describe("exec_command", () => {
       expect(EXEC_COMMAND_DESCRIPTION).toContain("-WindowStyle Hidden");
     }
   });
+
+  test("names the configured shell and its syntax in the advertised description", () => {
+    const posix = { ...makeConfig(workDir) };
+    posix.exec = { ...posix.exec, defaultShell: "/bin/bash" };
+    expect(describeExecCommand(posix)).toContain("/bin/bash (posix)");
+
+    const windows = { ...makeConfig(workDir) };
+    windows.exec = { ...windows.exec, defaultShell: "powershell.exe" };
+    const text = describeExecCommand(windows);
+    expect(text).toContain("powershell.exe (powershell)");
+    expect(text).toContain("Get-Content");
+  });
+
+  test("honours the shell parameter rather than the host platform", async () => {
+    // On Windows this used to run `bash -NoProfile -Command`, which bash reads
+    // as a request to execute the file "-NoProfile".
+    const shell = process.platform === "win32" ? process.env.SHELL : "/bin/sh";
+    if (!shell) return;
+    const result = await execCommandTool.handler(
+      { cmd: "echo from-posix-shell", shell },
+      makeConfig(workDir),
+      session,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(textOf(result)).output).toContain("from-posix-shell");
+  }, 15000);
 
   test("returns a session_id when the command outlives yield_time_ms", async () => {
     const result = await execCommandTool.handler(
