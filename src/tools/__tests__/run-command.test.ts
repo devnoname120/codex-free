@@ -12,6 +12,7 @@ function makeConfig(workDir: string, allowedCommands: string[] = ["echo", "ls", 
     allowedCommands,
     tree: { defaultDepth: 3, ignore: [] },
     command: { defaultTimeout: 30000, maxTimeout: 120000 },
+    exec: { mode: "allowlist", extraAllowedCommands: [], maxSessions: 8 },
   };
 }
 

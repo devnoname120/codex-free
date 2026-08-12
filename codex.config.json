@@ -8,5 +8,13 @@
   "command": {
     "defaultTimeout": 30000,
     "maxTimeout": 120000
+  },
+  "exec": {
+    "mode": "allowlist",
+    "extraAllowedCommands": [
+      "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd",
+      "which", "rg", "sed", "awk", "sort", "uniq", "diff", "true", "false"
+    ],
+    "maxSessions": 8
   }
 }

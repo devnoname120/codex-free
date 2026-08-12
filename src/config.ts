@@ -7,6 +7,16 @@ const DEFAULTS: Omit<AppConfig, "workDir"> = {
   allowedCommands: ["bun", "npm", "npx", "node", "git", "python", "pip", "cargo", "make"],
   tree: { defaultDepth: 3, ignore: ["node_modules", ".git", "dist", ".next", "__pycache__"] },
   command: { defaultTimeout: 30000, maxTimeout: 120000 },
+  exec: {
+    mode: "allowlist",
+    // Read-only utilities that make shell pipelines usable under allowlist mode
+    // without widening what `run_command` will execute.
+    extraAllowedCommands: [
+      "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd",
+      "which", "rg", "sed", "awk", "sort", "uniq", "diff", "true", "false",
+    ],
+    maxSessions: 8,
+  },
 };
 
 export function parseCli(): CliArgs {
@@ -64,5 +74,6 @@ export async function loadConfig(cli: CliArgs): Promise<AppConfig> {
     allowedCommands: fileConfig.allowedCommands ?? DEFAULTS.allowedCommands,
     tree: { ...DEFAULTS.tree, ...fileConfig.tree },
     command: { ...DEFAULTS.command, ...fileConfig.command },
+    exec: { ...DEFAULTS.exec, ...fileConfig.exec },
   };
 }

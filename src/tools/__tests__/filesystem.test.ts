@@ -15,6 +15,7 @@ function makeConfig(workDir: string): AppConfig {
     allowedCommands: [],
     tree: { defaultDepth: 3, ignore: ["node_modules", ".git"] },
     command: { defaultTimeout: 30000, maxTimeout: 120000 },
+    exec: { mode: "allowlist", extraAllowedCommands: [], maxSessions: 8 },
   };
 }
 

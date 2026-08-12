@@ -10,6 +10,13 @@ import glob from "./tools/glob.js";
 import grep from "./tools/grep.js";
 import listDirectory from "./tools/list-directory.js";
 import tree from "./tools/tree.js";
+import applyPatch from "./tools/apply-patch.js";
+import execCommand from "./tools/exec-command.js";
+import writeStdin from "./tools/write-stdin.js";
+import viewImage from "./tools/view-image.js";
+import updatePlan from "./tools/update-plan.js";
+import clockCurrTime from "./tools/clock-curr-time.js";
+import clockSleep from "./tools/clock-sleep.js";
 
 const ALL_TOOLS: ToolDefinition[] = [
   readFile,
@@ -23,6 +30,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   grep,
   listDirectory,
   tree,
+  // Ported from Codex (codex-rs/core/src/tools). Names use underscores because
+  // MCP tool names must match ^[a-zA-Z0-9_-]{1,64}$, so Codex's `clock.curr_time`
+  // becomes `clock_curr_time`.
+  applyPatch,
+  execCommand,
+  writeStdin,
+  viewImage,
+  updatePlan,
+  clockCurrTime,
+  clockSleep,
 ];
 
 export function loadTools(): ToolDefinition[] {
