@@ -9,8 +9,7 @@ import { loadTools } from "./registry.js";
 import type { AppConfig, ToolDefinition, ToolResult } from "./types.js";
 import { createSessionState } from "./types.js";
 import { disposeExecSessions } from "./exec-sessions.js";
-import { describeEnvironment, renderEnvironment } from "./tools/get-environment.js";
-import { PROJECT_DOC_SEPARATOR, loadProjectDoc } from "./project-doc.js";
+import { buildInstructions } from "./instructions.js";
 
 /**
  * Fills in the `structuredContent` the MCP spec expects from any tool that
@@ -37,53 +36,13 @@ export function withStructuredContent(
   return { ...result, structuredContent: { content: text } };
 }
 
-/**
- * The brief a client sees at initialize time.
- *
- * Codex gives its agent the same facts through an `<environment_context>`
- * message, a system prompt and the project's AGENTS.md; an MCP server has none
- * of those channels, so this is where they go. Not every client surfaces
- * `instructions`, which is why `get_environment` and `get_project_doc` exist
- * as well.
- */
-export function buildInstructions(config: AppConfig): string {
-  const env = describeEnvironment(config);
-  const doc = loadProjectDoc(config);
-  const lines = [
-    "This server bridges a local project directory. Every path is relative to the working directory below, and nothing outside it can be read or written.",
-    "",
-    renderEnvironment(env),
-    "",
-    "Working notes:",
-    "- Prefer apply_patch over write_file for edits to existing files: it patches in place with surrounding context instead of rewriting the whole file.",
-    "- Prefer the structured tools (glob, grep, list_directory, tree, read_file) over shelling out. They behave identically on every OS, while shell commands do not.",
-    "- exec_command returns a session_id instead of a result when a command outlives its yield window; drive it from there with write_stdin.",
-    "- update_plan keeps a checklist across a task and is worth using for anything multi-step.",
-  ];
-
-  // Codex marks the same transition with this separator: everything past it is
-  // the project's own instructions, which outrank the notes above. get_project_doc
-  // returns the identical text for clients that never read `instructions`.
-  if (doc) {
-    lines.push(
-      "- The project's own instructions follow the marker below and take precedence over these notes.",
-      "",
-      PROJECT_DOC_SEPARATOR,
-      "",
-      doc.text,
-    );
-  }
-
-  return lines.join("\n");
-}
-
 function createMcpServer(
   config: AppConfig,
   tools: ToolDefinition[],
   session: ReturnType<typeof createSessionState>,
 ): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.5.0" },
+    { name: "codex-free", version: "0.6.0" },
     {
       capabilities: { tools: { listChanged: false } },
       instructions: buildInstructions(config),

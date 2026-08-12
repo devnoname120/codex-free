@@ -19,6 +19,7 @@ import clockCurrTime from "./tools/clock-curr-time.js";
 import clockSleep from "./tools/clock-sleep.js";
 import getEnvironment from "./tools/get-environment.js";
 import getProjectDoc from "./tools/get-project-doc.js";
+import getAgentBrief from "./tools/get-agent-brief.js";
 
 const ALL_TOOLS: ToolDefinition[] = [
   readFile,
@@ -42,12 +43,15 @@ const ALL_TOOLS: ToolDefinition[] = [
   updatePlan,
   clockCurrTime,
   clockSleep,
-  // Neither is a Codex tool, because Codex does not need one: it tells its
-  // model the OS and shell through an <environment_context> message and loads
-  // AGENTS.md straight into the prompt. An MCP server can send neither, so both
-  // facts are offered as tool calls as well as in the server's instructions.
+  // None of these three is a Codex tool, because Codex does not need one: it
+  // sends the OS and shell in an <environment_context> message, loads AGENTS.md
+  // straight into the prompt, and puts its agent brief in the system prompt. An
+  // MCP server has none of those channels, so each fact is offered as a tool
+  // call as well as in the server's instructions. get_agent_brief returns all
+  // three at once, for a client that only makes one onboarding call.
   getEnvironment,
   getProjectDoc,
+  getAgentBrief,
 ];
 
 export function loadTools(): ToolDefinition[] {

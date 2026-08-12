@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import getProjectDoc, { renderProjectDoc } from "../get-project-doc.js";
 import { loadProjectDoc } from "../../project-doc.js";
-import { buildInstructions } from "../../server.js";
+import { buildInstructions } from "../../instructions.js";
 import { createSessionState } from "../../types.js";
 import type { AppConfig, ToolDefinition } from "../../types.js";
 
@@ -83,7 +83,7 @@ describe("buildInstructions with a project doc", () => {
     const text = buildInstructions(makeConfig());
     expect(text).toContain("--- project-doc ---");
     expect(text.indexOf("--- project-doc ---")).toBeLessThan(text.indexOf("Never force-push."));
-    expect(text).toContain("take precedence over these notes");
+    expect(text).toContain("take precedence over everything above");
   });
 
   test("omits the marker entirely when the project has no doc", () => {

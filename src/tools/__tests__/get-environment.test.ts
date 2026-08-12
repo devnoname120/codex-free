@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import getEnvironment, { describeEnvironment, osName, renderEnvironment } from "../get-environment.js";
-import { buildInstructions } from "../../server.js";
+import { buildInstructions } from "../../instructions.js";
 import { createSessionState } from "../../types.js";
 import type { AppConfig, ToolDefinition } from "../../types.js";
 

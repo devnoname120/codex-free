@@ -6,7 +6,7 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
-Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. Since v0.5.0 it also reads the project's `AGENTS.md` the way Codex does. The schemas are ported from the Codex source, not reimplemented from guesswork.
+Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ flowchart LR
     Edit["apply_patch"]
     Exec["exec_command\nwrite_stdin"]
     Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
-    Env["get_environment\nget_project_doc"]
+    Env["get_agent_brief\nget_environment\nget_project_doc"]
     WorkDir[("Project\nDirectory")]
 
     ChatGPT -- "HTTPS" --> Tunnel
@@ -100,14 +100,15 @@ Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
 
 Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
 
-Two tools have no Codex counterpart:
+Three tools have no Codex counterpart:
 
 | Tool | Description |
 |------|-------------|
+| `get_agent_brief` | Return the whole operating brief — behaviour, environment and project rules — in one call |
 | `get_environment` | Report the OS, the shell `exec_command` uses, the work directory, and what the policy allows |
 | `get_project_doc` | Read the project's `AGENTS.md` instructions |
 
-Codex needs neither: it tells its model the OS and shell through an `<environment_context>` message and loads `AGENTS.md` straight into the prompt, both before the first turn. An MCP server can only expose tools, so the same facts are tool calls here as well as part of the server's `instructions`. See [Shells and the host](#shells-and-the-host) and [AGENTS.md](#agentsmd).
+Codex needs none of them: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. See [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host) and [AGENTS.md](#agentsmd).
 
 Two deliberate differences from Codex:
 
@@ -173,6 +174,32 @@ The `projectDoc` block governs [AGENTS.md](#agentsmd) discovery. All three keys 
 | `fallbackFilenames` | `[]` | Extra filenames to try per directory, after `AGENTS.override.md` and `AGENTS.md` |
 | `rootMarkers` | `[".git"]` | Filenames or directories that mark the project root; an empty list stops the walk at the work directory |
 
+## Acting as a Codex agent
+
+A tool list says what a model *can* do; it says nothing about how a careful engineer uses it. Codex closes that gap with a system prompt, and since v0.6.0 so does this bridge — the behavioural half of `codex-rs/core/gpt-5.2-codex_prompt.md` is ported into the server's `instructions`.
+
+That brief is what stops the client rewriting a file it never read, reverting your uncommitted work, reaching for `git reset --hard`, or making a one-step plan. It carries Codex's editing constraints (ASCII by default, comments only where they earn their place, `apply_patch` over rewrites, and the dirty-worktree rules in full), its planning rules, its code-review posture, and its habit of reporting back concisely without pasting files you already have on disk.
+
+The `initialize` response layers three things in Codex's own order, each outranking the one above it:
+
+1. **The agent brief** — how to behave.
+2. **The environment** — OS, shell, work directory, command policy.
+3. **`AGENTS.md`** — the project speaking for itself, behind the `--- project-doc ---` marker.
+
+Three parts of Codex's prompt are deliberately dropped. Its `rg` preference is redundant here, since `grep` and `glob` are tools that behave the same on every OS. Its final-answer style rules and clickable file-reference syntax both exist to drive a terminal renderer, and an MCP client renders markdown — importing them would produce CLI-flavoured output in a chat window. What those sections were *for* — brevity, not dumping files, relaying output the user cannot see — is kept.
+
+### Starting a chat
+
+`instructions` is the proper channel, but no client is obliged to show it to its model, and ChatGPT Web is not reliable about it. `get_agent_brief` returns the identical string, so one line is enough to onboard a conversation:
+
+```
+Call get_agent_brief and follow it for the rest of this chat.
+
+Task: <what you want done>
+```
+
+Everything else — the shell you're on, the allowlist, your repo's `AGENTS.md` — arrives with that one call. If a chat starts drifting back into generic-assistant behaviour, asking for the brief again re-anchors it.
+
 ## Shells and the host
 
 Windows, macOS and Linux are all supported natively; there is no WSL or POSIX-emulation layer in between. Which shell runs is decided by name, not by host platform, the same way Codex's `Shell::derive_exec_args` does it:
@@ -189,7 +216,7 @@ Two Windows-specific details are handled: `powershell -Command` collapses every 
 
 Because the resolved shell decides what a command should even look like, it is published three ways — a client only has to read one of them:
 
-- **`instructions`** in the `initialize` response: the environment plus a short brief on how these tools are meant to be used.
+- **`instructions`** in the `initialize` response, as the Environment section of the [agent brief](#acting-as-a-codex-agent).
 - **`exec_command`'s description**, which names the actual shell binary and its syntax family.
 - **`get_environment`**, for clients that read neither.
 
@@ -201,7 +228,7 @@ Discovery walks up from `--work-dir` to the nearest directory holding a **root m
 
 Like the environment, the result is published more than one way:
 
-- **`instructions`** carries the doc inline, behind Codex's own `--- project-doc ---` separator. Everything past that marker is the project speaking, and it outranks the bridge's own working notes.
+- **`instructions`** carries the doc inline, behind Codex's own `--- project-doc ---` separator. Everything past that marker is the project speaking, and it outranks the [agent brief](#acting-as-a-codex-agent) above it.
 - **`get_project_doc`** returns the identical text for clients that never read `instructions`, along with the absolute path of every file it came from and whether each was truncated.
 
 Instructions are built per MCP session, so editing `AGENTS.md` takes effect on the next connection without restarting the server.
@@ -218,6 +245,7 @@ Instructions are built per MCP session, so editing `AGENTS.md` takes effect on t
 5. Set the **Server URL** to the tunnel URL with `/mcp` appended, e.g. `https://<your-tunnel>/mcp`.
 6. Set **Authentication** to "No Auth".
 7. After creating the plugin, go to **Permissions** and set it to **Allow all actions** so ChatGPT can call tools without asking for confirmation each time.
+8. In a new chat, enable the plugin from the composer's tools menu, then open with `Call get_agent_brief and follow it for the rest of this chat.` — see [Acting as a Codex agent](#acting-as-a-codex-agent).
 
 > ChatGPT Plugins only support OAuth, No Auth, and Mixed. The `--api-key` option is for non-ChatGPT clients or tunnel-level auth. When using ChatGPT, secure access through your tunnel provider instead (e.g. ngrok IP restrictions, Cloudflare Access).
 
