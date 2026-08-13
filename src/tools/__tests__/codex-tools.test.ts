@@ -39,6 +39,9 @@ function makeConfig(workDir: string, mode: ExecMode = "allowlist"): AppConfig {
     // update_plan persists; pinned inside the temp work directory so the suite
     // never writes to the running user's real state directory.
     memory: { dir: join(workDir, ".state") },
+    // get_agent_brief renders the skill catalogue; an empty user scope keeps the
+    // running user's own skills out of the suite.
+    skills: { dirs: [] },
   };
 }
 

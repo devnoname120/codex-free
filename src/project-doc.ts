@@ -52,11 +52,12 @@ export function findProjectRoot(startDir: string, markers: string[]): string | n
 }
 
 /**
- * Project docs from the project root down to the work directory, in that order,
- * at most one per directory. Ordering is Codex's: the outermost file comes
- * first, so a nested AGENTS.md is read last and qualifies what came before it.
+ * Directories from the project root down to the work directory, outermost
+ * first. This is the span Codex searches for anything project-scoped — both
+ * AGENTS.md and, in `src/skills.ts`, repo skill roots — so the walk lives here
+ * once and both callers share the same notion of how far up to go.
  */
-export function projectDocPaths(config: AppConfig): string[] {
+export function projectDirs(config: AppConfig): string[] {
   const settings = config.projectDoc ?? {};
   const root = findProjectRoot(config.workDir, settings.rootMarkers ?? DEFAULT_ROOT_MARKERS);
 
@@ -69,8 +70,17 @@ export function projectDocPaths(config: AppConfig): string[] {
     if (parent === cursor) break;
     cursor = parent;
   }
-  dirs.reverse();
+  return dirs.reverse();
+}
 
+/**
+ * Project docs from the project root down to the work directory, in that order,
+ * at most one per directory. Ordering is Codex's: the outermost file comes
+ * first, so a nested AGENTS.md is read last and qualifies what came before it.
+ */
+export function projectDocPaths(config: AppConfig): string[] {
+  const settings = config.projectDoc ?? {};
+  const dirs = projectDirs(config);
   const names = candidateFilenames(settings);
   const found: string[] = [];
   for (const dir of dirs) {

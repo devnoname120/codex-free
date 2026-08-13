@@ -22,6 +22,8 @@ import getProjectDoc from "./tools/get-project-doc.js";
 import getAgentBrief from "./tools/get-agent-brief.js";
 import remember from "./tools/remember.js";
 import recall from "./tools/recall.js";
+import skillsList from "./tools/skills-list.js";
+import skillsRead from "./tools/skills-read.js";
 
 const ALL_TOOLS: ToolDefinition[] = [
   readFile,
@@ -45,6 +47,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   updatePlan,
   clockCurrTime,
   clockSleep,
+  // Codex's `skills.list` and `skills.read`, minus the parts that only exist
+  // because Codex can reach execution environments: the file format and the
+  // search span are the same, the source is always the host filesystem.
+  skillsList,
+  skillsRead,
   // None of these three is a Codex tool, because Codex does not need one: it
   // sends the OS and shell in an <environment_context> message, loads AGENTS.md
   // straight into the prompt, and puts its agent brief in the system prompt. An

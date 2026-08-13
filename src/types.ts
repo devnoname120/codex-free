@@ -149,6 +149,21 @@ export interface MemoryConfig {
 }
 
 /**
+ * Governs SKILL.md discovery. Every field is optional; see `src/skills.ts` for
+ * the defaults and the search order.
+ */
+export interface SkillsConfig {
+  /** Set false to stop searching entirely; skills_list and skills_read then say so. */
+  enabled?: boolean;
+  /**
+   * User-scope skill directories, replacing the `.agents/skills` and
+   * `.codex/skills` defaults under the home directory. Relative paths resolve
+   * against the work directory. Project-scope roots are unaffected.
+   */
+  dirs?: string[];
+}
+
+/**
  * Ceilings on what one tool call may return. Every field is optional; see
  * `src/output-budget.ts` for the defaults and why each cap exists.
  */
@@ -174,6 +189,7 @@ export interface AppConfig {
   projectDoc?: ProjectDocConfig;
   output?: OutputConfig;
   memory?: MemoryConfig;
+  skills?: SkillsConfig;
 }
 
 export interface CliArgs {

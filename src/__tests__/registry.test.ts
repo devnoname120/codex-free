@@ -2,9 +2,9 @@ import { describe, test, expect } from "bun:test";
 import { loadTools } from "../registry.js";
 
 describe("loadTools", () => {
-  test("loads all 23 tools", () => {
+  test("loads all 25 tools", () => {
     const tools = loadTools();
-    expect(tools.length).toBe(23);
+    expect(tools.length).toBe(25);
   });
 
   test("all tools have unique names", () => {
@@ -49,6 +49,8 @@ describe("loadTools", () => {
     expect(names).toContain("update_plan");
     expect(names).toContain("clock_curr_time");
     expect(names).toContain("clock_sleep");
+    expect(names).toContain("skills_list");
+    expect(names).toContain("skills_read");
   });
 
   test("includes the tools Codex has no equivalent of", () => {

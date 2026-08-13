@@ -86,6 +86,7 @@ describe("registry output schemas", () => {
       "exec_command",
       "get_environment",
       "get_project_doc",
+      "skills_list",
       "write_stdin",
     ]);
   });

@@ -1,5 +1,6 @@
 import { loadMemory, memoryEnabled, renderMemory } from "./memory.js";
 import { PROJECT_DOC_SEPARATOR, loadProjectDoc } from "./project-doc.js";
+import { discoverSkills, renderSkillCatalog } from "./skills.js";
 import { describeEnvironment, renderEnvironment } from "./tools/get-environment.js";
 import type { AppConfig } from "./types.js";
 
@@ -91,9 +92,10 @@ export const AGENT_BRIEF = [
  * returns.
  *
  * Codex assembles the same layers in the same order: base instructions, then
- * `<environment_context>`, then the project's AGENTS.md last so it outranks both.
- * Working memory is inserted between the environment and the project doc: it is
- * state rather than instruction, and the project's own rules stay last.
+ * `<environment_context>`, then the skill catalogue, then the project's AGENTS.md
+ * last so it outranks all of them. Working memory is inserted after the
+ * environment: it is state rather than instruction, and the project's own rules
+ * stay last.
  *
  * Because this is rebuilt per MCP session, a conversation that starts after a
  * previous one was lost opens with the plan and notes already in front of it.
@@ -120,6 +122,26 @@ export function buildInstructions(config: AppConfig): string {
         memory,
       );
     }
+  }
+
+  // Codex puts the skill catalogue in the prompt and reads a body only once a
+  // skill is chosen. The section is left out entirely when the project and the
+  // user have installed none, rather than announcing an empty library.
+  const catalog = renderSkillCatalog(discoverSkills(config));
+  if (catalog) {
+    lines.push(
+      "",
+      "## Skills",
+      "",
+      "A skill is a set of instructions someone already worked out for a task of this kind, stored in a SKILL.md. The list below is what is available; each entry gives a name and what it is for.",
+      "",
+      catalog,
+      "",
+      "- If the user names a skill, or the task clearly matches one of these descriptions, use that skill for the turn. If several apply, take the smallest set that covers the request and say in one line which you are using.",
+      "- Read the whole SKILL.md with skills_read before acting on it, and read it yourself rather than having something else summarise it.",
+      "- A skill's body may point at other files in its package — references, scripts, assets. Reach them with skills_read and the same name, passing the path as `resource`; they are usually outside the working directory, so read_file cannot open them. Open only the ones the body actually routes you to, and prefer running or patching a script it provides over retyping the code.",
+      "- If a named skill is missing or unreadable, say so briefly and carry on with the best fallback.",
+    );
   }
 
   // Codex marks the same transition with this separator: everything past it is

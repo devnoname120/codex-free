@@ -6,7 +6,7 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
-Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. v0.7.0 addresses the one thing Codex never had to solve — a context window far smaller than the task — by bounding what a tool call can return and keeping a plan and notes on disk across conversations. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
+Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. v0.7.0 addresses the one thing Codex never had to solve — a context window far smaller than the task — by bounding what a tool call can return and keeping a plan and notes on disk across conversations. v0.8.0 adds Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
 
 ## Architecture
 
@@ -26,8 +26,10 @@ flowchart LR
     Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
     Env["get_agent_brief\nget_environment\nget_project_doc"]
     Mem["remember\nrecall"]
+    Skills["skills_list\nskills_read"]
     WorkDir[("Project\nDirectory")]
     State[("~/.codex-free\nmemory.json")]
+    SkillDirs[(".agents/skills\n.codex/skills")]
 
     ChatGPT -- "HTTPS" --> Tunnel
     Tunnel -- "HTTP\n/mcp" --> Server
@@ -42,6 +44,7 @@ flowchart LR
     Tools --> Agent
     Tools --> Env
     Tools --> Mem
+    Tools --> Skills
 
     FS --> WorkDir
     Search --> WorkDir
@@ -52,6 +55,7 @@ flowchart LR
     Agent --> WorkDir
     Env --> WorkDir
     Mem --> State
+    Skills --> SkillDirs
 ```
 
 ## Quick start
@@ -90,7 +94,7 @@ Structured primitives — cheaper and safer than shelling out for the same job, 
 | `list_directory` | List files and directories with name, type, and size |
 | `tree` | Print directory tree as ASCII art |
 
-Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
+Ported from Codex (`codex-rs/core/src/tools` at commit `2230d64`, `codex-rs/ext/skills` at `902bd9e`):
 
 | Tool | Codex name | Description |
 |------|------------|-------------|
@@ -101,6 +105,8 @@ Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
 | `update_plan` | `update_plan` | Track a multi-step plan; saved to disk so a later conversation can pick it up |
 | `clock_curr_time` | `clock.curr_time` | Current time in UTC |
 | `clock_sleep` | `clock.sleep` | Pause for a given duration |
+| `skills_list` | `skills.list` | List the `SKILL.md` skills installed for this project and this user |
+| `skills_read` | `skills.read` | Read a skill's instructions, or another file in its package |
 
 Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
 
@@ -123,7 +129,7 @@ Two deliberate differences from Codex:
 
 `clock_sleep` also caps at 5 minutes rather than Codex's 12 hours — a longer wait would outlive the HTTP request through the tunnel.
 
-Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `clock_curr_time` returns `{ current_time }`, `get_environment` returns the environment object and `get_project_doc` returns `{ files, content }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
+Every tool that advertises an `outputSchema` also returns `structuredContent` matching it, as the MCP spec asks. `exec_command` and `write_stdin` return Codex's unified-exec object, `clock_curr_time` returns `{ current_time }`, `get_environment` returns the environment object, `get_project_doc` returns `{ files, content }` and `skills_list` returns `{ skills, content }`; the rest return `{ content: <text> }`, which the server derives from the text blocks so handlers don't repeat it.
 
 All paths are resolved relative to `--work-dir`.
 
@@ -165,6 +171,9 @@ All paths are resolved relative to `--work-dir`.
   "memory": {
     "enabled": true,
     "maxBytes": 16384
+  },
+  "skills": {
+    "enabled": true
   }
 }
 ```
@@ -207,6 +216,13 @@ The `memory` block governs `remember`, `recall` and the plan `update_plan` saves
 | `dir` | `~/.codex-free/projects/<name>-<hash of work-dir>` | Where the state file lives. Outside the repository by default |
 | `maxBytes` | `16384` | Budget for all notes together. A note over it is rejected, not silently evicted |
 
+The `skills` block governs `SKILL.md` discovery. See [Skills](#skills):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | `false` searches nothing; both tools say so and the catalogue leaves `instructions` |
+| `dirs` | `~/.agents/skills`, `~/.codex/skills` | User-scope directories, **replacing** the home-directory defaults. Relative paths resolve against the work directory; project-scope roots are unaffected |
+
 ## Context and memory
 
 Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. v0.7.0 attacks both halves of that.
@@ -233,12 +249,13 @@ A tool list says what a model *can* do; it says nothing about how a careful engi
 
 That brief is what stops the client rewriting a file it never read, reverting your uncommitted work, reaching for `git reset --hard`, or making a one-step plan. It carries Codex's editing constraints (ASCII by default, comments only where they earn their place, `apply_patch` over rewrites, and the dirty-worktree rules in full), its planning rules, its code-review posture, and its habit of reporting back concisely without pasting files you already have on disk.
 
-The `initialize` response layers Codex's three in Codex's own order, each outranking the one above it, plus one Codex has no need for:
+The `initialize` response layers Codex's four in Codex's own order, each outranking the one above it, plus one Codex has no need for:
 
 1. **The agent brief** — how to behave.
 2. **The environment** — OS, shell, work directory, command policy.
 3. **Saved state** — the plan and notes left by earlier work, when there are any. See [Context and memory](#context-and-memory).
-4. **`AGENTS.md`** — the project speaking for itself, behind the `--- project-doc ---` marker.
+4. **The skill catalogue** — what this project and this user already know how to do, when any is installed. See [Skills](#skills).
+5. **`AGENTS.md`** — the project speaking for itself, behind the `--- project-doc ---` marker.
 
 Three parts of Codex's prompt are deliberately dropped. Its `rg` preference is redundant here, since `grep` and `glob` are tools that behave the same on every OS. Its final-answer style rules and clickable file-reference syntax both exist to drive a terminal renderer, and an MCP client renders markdown — importing them would produce CLI-flavoured output in a chat window. What those sections were *for* — brevity, not dumping files, relaying output the user cannot see — is kept.
 
@@ -287,6 +304,48 @@ Like the environment, the result is published more than one way:
 
 Instructions are built per MCP session, so editing `AGENTS.md` takes effect on the next connection without restarting the server.
 
+## Skills
+
+`AGENTS.md` says what is true of the project always. A **skill** says how to do one recurring task well — cut a release, review a PR the way this team reviews PRs, debug the flaky suite — and is only read when that task comes up. Codex has had them since its extension crate landed; v0.8.0 ports the format and the discovery, from `codex-rs/ext/skills` and `codex-rs/skills`.
+
+A skill is a directory holding a `SKILL.md` whose YAML frontmatter names it and says when it applies:
+
+```
+.agents/skills/
+└── release/
+    ├── SKILL.md
+    ├── references/versioning.md
+    └── scripts/tag.sh
+```
+
+```markdown
+---
+name: release
+description: Cut and publish a release of this project
+---
+
+1. Check `bun test` and `bunx tsc --noEmit` are clean.
+2. Bump the version in `package.json` and `src/server.ts` together.
+3. Run `scripts/tag.sh`; see `references/versioning.md` for what the tag must look like.
+```
+
+`description` is required — it is the only thing the model sees before deciding whether the skill is worth reading. `name` defaults to the directory name. `metadata.short-description` is optional. A skill whose frontmatter cannot be used is reported by `skills_list` rather than silently dropped, because the author meant it to be there.
+
+**Where they are found**, in precedence order:
+
+| Scope | Directories |
+|-------|-------------|
+| `repo` | `.agents/skills` and `.codex/skills`, in every directory from the project root down to `--work-dir` |
+| `user` | `~/.agents/skills` and `~/.codex/skills`, or whatever `skills.dirs` names instead |
+
+Repo skills come first, so a project decides how a name behaves inside it; a personal skill of the same name is shadowed and `skills_list` says so rather than merging the two.
+
+**What the model sees.** The catalogue — a name and a description per skill — goes into `instructions` under a `## Skills` heading, so a chat opens knowing what is available without spending a call to find out. Bodies are not loaded: `skills_read` fetches one only once a skill has actually been chosen. That is the progressive disclosure that makes a large library affordable on a small context window. The section is omitted entirely when nothing is installed.
+
+**Reaching the rest of a package.** Reference files, scripts and assets are read with `skills_read` and the skill's name, passing the file's path as `resource`. `read_file` will not do: it is confined to `--work-dir`, and user-scope skills live in your home directory. Paths inside a skill are relative to the skill's own directory, and a `resource` that tries to leave it is rejected — so the only thing this opens up is the inside of a skill you or the project deliberately installed. Reading a `SKILL.md` lists the package's other files, since the model cannot glob a directory it cannot see.
+
+Discovery runs per MCP session, so adding a skill takes effect on the next connection without restarting the server. Set `skills.enabled` to `false` to turn the whole thing off.
+
 ## Connecting to ChatGPT
 
 1. In ChatGPT, go to **Settings > Security and login** and enable **Developer mode**.
@@ -308,6 +367,7 @@ Instructions are built per MCP session, so editing `AGENTS.md` takes effect on t
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside `--work-dir`.
 - **One bounded exception**: [AGENTS.md](#agentsmd) discovery reads above `--work-dir`, up to the nearest `.git`. Nothing else does. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory.
 - **One bounded write outside the work directory**: `remember` and `update_plan` write `memory.json` under `~/.codex-free/`, deliberately outside the repository so nothing lands in your git history. It holds whatever the model chose to note about the task — read it if you want to know, delete the directory to forget, or set `memory.enabled` to `false` to never write it. See [Context and memory](#context-and-memory).
+- **One bounded read outside the work directory**: [skills](#skills) may live in `~/.agents/skills` or `~/.codex/skills`. `skills_read` opens files there, but only inside a skill package that already exists — the `resource` path is checked against the skill's own directory, so it cannot walk out into the rest of your home directory. `skills_list` reports the absolute path of every skill it found. Set `skills.enabled` to `false` to switch it off, or `skills.dirs` to point the user scope somewhere you choose.
 - **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected. `exec_command` checks the same list plus `exec.extraAllowedCommands`, at every command position in the string.
 - **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
 

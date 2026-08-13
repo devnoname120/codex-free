@@ -28,7 +28,17 @@ function makeConfig(shell = "bash"): AppConfig {
     exec: { mode: "allowlist", extraAllowedCommands: [], maxSessions: 8, defaultShell: shell },
     // Pinned so the suite never reads or writes the running user's real state.
     memory: { dir: join(root, "state") },
+    // Same reason: an empty user scope, so a developer who happens to have
+    // skills in their home directory does not change what these tests see.
+    skills: { dirs: [] },
   };
+}
+
+/** Installs a project-scope skill, which is what buildInstructions catalogues. */
+function writeSkill(name: string, description: string): void {
+  const dir = join(root, ".agents", "skills", name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n`);
 }
 
 describe("AGENT_BRIEF", () => {
@@ -123,5 +133,35 @@ describe("buildInstructions", () => {
     remember(config, "k", "v", "2026-01-01T00:00:00.000Z");
     const disabled = { ...config, memory: { ...config.memory, enabled: false } };
     expect(buildInstructions(disabled)).not.toContain("## Saved state");
+  });
+
+  test("announces no skill library when the project and the user have none", () => {
+    expect(buildInstructions(makeConfig())).not.toContain("## Skills");
+  });
+
+  // Codex puts the catalogue in the prompt so the model can pick a skill without
+  // spending a tool call to discover that one exists.
+  test("lists the installed skills, and how to open one", () => {
+    writeSkill("deploy", "Ship a release");
+
+    const text = buildInstructions(makeConfig());
+    expect(text).toContain("## Skills");
+    expect(text).toContain("- deploy (repo) — Ship a release");
+    expect(text).toContain("skills_read");
+  });
+
+  test("puts the catalogue after the environment and before the project doc", () => {
+    writeSkill("deploy", "Ship a release");
+    writeFileSync(join(root, "AGENTS.md"), "Never force-push.");
+
+    const text = buildInstructions(makeConfig());
+    expect(text.indexOf("## Environment")).toBeLessThan(text.indexOf("## Skills"));
+    expect(text.indexOf("## Skills")).toBeLessThan(text.indexOf(PROJECT_DOC_SEPARATOR));
+  });
+
+  test("omits the catalogue entirely when skills are disabled", () => {
+    writeSkill("deploy", "Ship a release");
+    const disabled = { ...makeConfig(), skills: { enabled: false } };
+    expect(buildInstructions(disabled)).not.toContain("## Skills");
   });
 });

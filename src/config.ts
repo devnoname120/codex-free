@@ -77,9 +77,10 @@ export async function loadConfig(cli: CliArgs): Promise<AppConfig> {
     exec: { ...DEFAULTS.exec, ...fileConfig.exec },
     // Passed through rather than merged with defaults: every field is optional
     // and the implementing module owns what each one falls back to
-    // (src/project-doc.ts, src/output-budget.ts, src/memory.ts).
+    // (src/project-doc.ts, src/output-budget.ts, src/memory.ts, src/skills.ts).
     projectDoc: fileConfig.projectDoc ?? {},
     output: fileConfig.output ?? {},
     memory: fileConfig.memory ?? {},
+    skills: fileConfig.skills ?? {},
   };
 }
