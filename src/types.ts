@@ -132,6 +132,37 @@ export interface ProjectDocConfig {
   rootMarkers?: string[];
 }
 
+/**
+ * Working memory that outlives a chat. Every field is optional; see
+ * `src/memory.ts` for the defaults.
+ */
+export interface MemoryConfig {
+  /** Set false to keep nothing on disk; remember and recall then say so plainly. */
+  enabled?: boolean;
+  /**
+   * Where state is kept. Defaults to a per-project directory under the user's
+   * home, deliberately outside the work directory so nothing lands in the repo.
+   */
+  dir?: string;
+  /** Byte ceiling on all notes together. A write past it is rejected, not evicted. */
+  maxBytes?: number;
+}
+
+/**
+ * Ceilings on what one tool call may return. Every field is optional; see
+ * `src/output-budget.ts` for the defaults and why each cap exists.
+ */
+export interface OutputConfig {
+  /** Lines `read_file` returns when the call names no smaller limit. */
+  maxFileLines?: number;
+  /** Byte ceiling for `read_file`, which a single minified line can hit alone. */
+  maxFileBytes?: number;
+  /** Entries `glob` and `list_directory` return. */
+  maxEntries?: number;
+  /** Nodes `tree` prints before it stops walking. */
+  maxTreeNodes?: number;
+}
+
 export interface AppConfig {
   workDir: string;
   apiKey?: string;
@@ -141,6 +172,8 @@ export interface AppConfig {
   command: { defaultTimeout: number; maxTimeout: number };
   exec: ExecConfig;
   projectDoc?: ProjectDocConfig;
+  output?: OutputConfig;
+  memory?: MemoryConfig;
 }
 
 export interface CliArgs {

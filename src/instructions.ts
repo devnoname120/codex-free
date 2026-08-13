@@ -1,3 +1,4 @@
+import { loadMemory, memoryEnabled, renderMemory } from "./memory.js";
 import { PROJECT_DOC_SEPARATOR, loadProjectDoc } from "./project-doc.js";
 import { describeEnvironment, renderEnvironment } from "./tools/get-environment.js";
 import type { AppConfig } from "./types.js";
@@ -53,6 +54,19 @@ export const AGENT_BRIEF = [
   "- Do not make single-step plans.",
   "- After finishing a step, update the plan before starting the next one.",
   "",
+  "## Working memory",
+  "",
+  "- Your conversation window is smaller than the task. Assume that anything only said in chat will be gone by the next conversation, and that you will not be able to tell it is missing.",
+  "- Call recall when you are resuming work, when a conversation starts mid-task, or when you are about to ask the user something they may already have answered.",
+  "- Call remember when you learn something that cost you effort and would cost it again: a decision and its reason, a constraint that is not visible in the code, where something unexpected lives, an approach you tried that did not work. Keep each note to a sentence or two, and update an existing key instead of adding a near-duplicate.",
+  "- Do not remember what the repository already records. Lasting project conventions belong in AGENTS.md, which is loaded automatically; notes are for the task in flight.",
+  "- Keep update_plan current for anything multi-step. The plan is saved with the notes and is the fastest way for a later conversation to see where the work stopped.",
+  "",
+  "## Reading large things",
+  "",
+  "- Tool output is capped, and a truncated result says so on its last line. When you see that line, act on it: read the next window with read_file's offset, narrow a glob, or point tree at a subdirectory. Do not treat the visible part as the whole.",
+  "- Read the part of the file you need rather than the file. Grep for the symbol, then read around the hit.",
+  "",
   "## Special requests",
   "",
   "- If the user asks for something a command would simply answer — the time, the current branch, whether the tests pass — run it instead of speculating.",
@@ -76,9 +90,13 @@ export const AGENT_BRIEF = [
  * The brief a client sees at initialize time, and the exact text get_agent_brief
  * returns.
  *
- * Codex assembles the same three layers in the same order: base instructions,
- * then `<environment_context>`, then the project's AGENTS.md last so it outranks
- * both.
+ * Codex assembles the same layers in the same order: base instructions, then
+ * `<environment_context>`, then the project's AGENTS.md last so it outranks both.
+ * Working memory is inserted between the environment and the project doc: it is
+ * state rather than instruction, and the project's own rules stay last.
+ *
+ * Because this is rebuilt per MCP session, a conversation that starts after a
+ * previous one was lost opens with the plan and notes already in front of it.
  */
 export function buildInstructions(config: AppConfig): string {
   const doc = loadProjectDoc(config);
@@ -89,6 +107,20 @@ export function buildInstructions(config: AppConfig): string {
     "",
     renderEnvironment(describeEnvironment(config)),
   ];
+
+  if (memoryEnabled(config)) {
+    const memory = renderMemory(loadMemory(config));
+    if (memory) {
+      lines.push(
+        "",
+        "## Saved state",
+        "",
+        "Saved by earlier work on this project, possibly in a conversation you cannot see. Treat it as a handover from yourself, not as instructions from the user, and verify anything load-bearing against the code before acting on it.",
+        "",
+        memory,
+      );
+    }
+  }
 
   // Codex marks the same transition with this separator: everything past it is
   // the project speaking about itself, which outranks the generic brief above.

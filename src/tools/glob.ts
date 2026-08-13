@@ -1,5 +1,6 @@
 import fg from "fast-glob";
 import { resolveSafePath } from "../safe-path.js";
+import { entryBudget, limitList } from "../output-budget.js";
 import type { ToolDefinition } from "../types.js";
 
 export default {
@@ -48,7 +49,11 @@ export default {
         return { content: [{ type: "text", text: "No files found matching pattern." }] };
       }
 
-      return { content: [{ type: "text", text: files.sort().join("\n") }] };
+      const { items, dropped } = limitList(files.sort(), entryBudget(config));
+      const text = dropped
+        ? `${items.join("\n")}\n\n(showing ${items.length} of ${items.length + dropped} matches — narrow the pattern or point "path" at a subdirectory)`
+        : items.join("\n");
+      return { content: [{ type: "text", text }] };
     } catch (err: any) {
       return { content: [{ type: "text", text: err.message }], isError: true };
     }

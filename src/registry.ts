@@ -20,6 +20,8 @@ import clockSleep from "./tools/clock-sleep.js";
 import getEnvironment from "./tools/get-environment.js";
 import getProjectDoc from "./tools/get-project-doc.js";
 import getAgentBrief from "./tools/get-agent-brief.js";
+import remember from "./tools/remember.js";
+import recall from "./tools/recall.js";
 
 const ALL_TOOLS: ToolDefinition[] = [
   readFile,
@@ -52,6 +54,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   getEnvironment,
   getProjectDoc,
   getAgentBrief,
+  // Codex has no equivalent either, for the opposite reason: its context is
+  // large and its session state lives in the CLI process. The client here is a
+  // chat window that loses the conversation, so what matters is written to disk
+  // outside the repo and handed back at the start of the next one.
+  remember,
+  recall,
 ];
 
 export function loadTools(): ToolDefinition[] {

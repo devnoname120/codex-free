@@ -1,11 +1,12 @@
 import { readdir } from "fs/promises";
 import { join } from "path";
 import { resolveSafePath } from "../safe-path.js";
+import { treeNodeBudget } from "../output-budget.js";
 import type { ToolDefinition } from "../types.js";
 
 export default {
   name: "tree",
-  description: "Show the project directory structure as an ASCII tree. Automatically ignores common directories (node_modules, .git, dist, __pycache__). Use this first to understand the project layout before diving into specific files. Limit depth to avoid overwhelming output on large projects.",
+  description: "Show the project directory structure as an ASCII tree. Automatically ignores common directories (node_modules, .git, dist, __pycache__). Use this first to understand the project layout before diving into specific files. Depth defaults to 3 and the walk stops at a node budget, so point 'path' at a subdirectory rather than asking for a deep tree of the whole repo.",
   inputSchema: {
     type: "object",
     properties: {
@@ -27,15 +28,29 @@ export default {
       const maxDepth = typeof args.depth === "number" ? args.depth : config.tree.defaultDepth;
       const ignoreSet = new Set(config.tree.ignore);
 
-      const lines: string[] = ["."];
-      await buildTree(rootPath, "", 0, maxDepth, ignoreSet, lines);
+      const state: WalkState = { lines: ["."], remaining: treeNodeBudget(config), stopped: false };
+      await buildTree(rootPath, "", 0, maxDepth, ignoreSet, state);
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      const text = state.stopped
+        ? `${state.lines.join("\n")}\n\n(stopped at ${state.lines.length - 1} nodes — lower "depth" or point "path" at a subdirectory)`
+        : state.lines.join("\n");
+      return { content: [{ type: "text", text }] };
     } catch (err: any) {
       return { content: [{ type: "text", text: err.message }], isError: true };
     }
   },
 } satisfies ToolDefinition;
+
+/**
+ * Walk state shared across the recursion. `remaining` is a whole-tree budget
+ * rather than a per-directory one, so a single enormous directory cannot starve
+ * its siblings out of the output without the result saying so.
+ */
+interface WalkState {
+  lines: string[];
+  remaining: number;
+  stopped: boolean;
+}
 
 async function buildTree(
   dirPath: string,
@@ -43,9 +58,9 @@ async function buildTree(
   depth: number,
   maxDepth: number,
   ignore: Set<string>,
-  lines: string[],
+  state: WalkState,
 ): Promise<void> {
-  if (depth >= maxDepth) return;
+  if (depth >= maxDepth || state.stopped) return;
 
   const entries = await readdir(dirPath, { withFileTypes: true });
   const filtered = entries
@@ -57,15 +72,22 @@ async function buildTree(
     });
 
   for (let i = 0; i < filtered.length; i++) {
+    if (state.remaining === 0) {
+      state.stopped = true;
+      return;
+    }
+
     const entry = filtered[i];
     const isLast = i === filtered.length - 1;
     const connector = isLast ? "└── " : "├── ";
     const childPrefix = isLast ? "    " : "│   ";
 
-    lines.push(`${prefix}${connector}${entry.name}${entry.isDirectory() ? "/" : ""}`);
+    state.lines.push(`${prefix}${connector}${entry.name}${entry.isDirectory() ? "/" : ""}`);
+    state.remaining--;
 
     if (entry.isDirectory()) {
-      await buildTree(join(dirPath, entry.name), prefix + childPrefix, depth + 1, maxDepth, ignore, lines);
+      await buildTree(join(dirPath, entry.name), prefix + childPrefix, depth + 1, maxDepth, ignore, state);
+      if (state.stopped) return;
     }
   }
 }

@@ -36,6 +36,9 @@ function makeConfig(workDir: string, mode: ExecMode = "allowlist"): AppConfig {
     tree: { defaultDepth: 3, ignore: [] },
     command: { defaultTimeout: 30000, maxTimeout: 120000 },
     exec: { mode, extraAllowedCommands: ["echo"], maxSessions: 4 },
+    // update_plan persists; pinned inside the temp work directory so the suite
+    // never writes to the running user's real state directory.
+    memory: { dir: join(workDir, ".state") },
   };
 }
 

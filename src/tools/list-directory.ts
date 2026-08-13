@@ -1,6 +1,7 @@
 import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { resolveSafePath } from "../safe-path.js";
+import { entryBudget, limitList } from "../output-budget.js";
 import type { ToolDefinition } from "../types.js";
 
 export default {
@@ -24,10 +25,14 @@ export default {
         ? resolveSafePath(args.path as string, config.workDir)
         : config.workDir;
 
-      const entries = await readdir(dirPath, { withFileTypes: true });
+      const all = (await readdir(dirPath, { withFileTypes: true }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      // Cut before stat()ing, so a directory with 50k files does not cost 50k
+      // syscalls to produce output that would be thrown away anyway.
+      const { items: entries, dropped } = limitList(all, entryBudget(config));
       const lines: string[] = [];
 
-      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const entry of entries) {
         const type = entry.isDirectory() ? "dir" : "file";
         if (type === "file") {
           const s = await stat(join(dirPath, entry.name));
@@ -41,7 +46,10 @@ export default {
         return { content: [{ type: "text", text: "Directory is empty." }] };
       }
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      const text = dropped
+        ? `${lines.join("\n")}\n\n(showing ${lines.length} of ${lines.length + dropped} entries — use glob for a filtered view)`
+        : lines.join("\n");
+      return { content: [{ type: "text", text }] };
     } catch (err: any) {
       return { content: [{ type: "text", text: err.message }], isError: true };
     }

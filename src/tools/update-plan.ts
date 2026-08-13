@@ -1,3 +1,4 @@
+import { savePlan } from "../memory.js";
 import type { PlanItem, PlanState, PlanStepStatus, ToolDefinition } from "../types.js";
 
 const STATUSES: PlanStepStatus[] = ["pending", "in_progress", "completed"];
@@ -48,7 +49,7 @@ export default {
   description: `Updates the task plan.
 Provide an optional explanation and a list of plan items, each with a step and status.
 At most one step can be in_progress at a time.
-Use this to track multi-step work: post the full plan up front, then re-send the whole list with updated statuses as you go. The plan is kept per MCP session and echoed back on each update.`,
+Use this to track multi-step work: post the full plan up front, then re-send the whole list with updated statuses as you go. The plan is echoed back on each update, and saved so that recall can hand it back in a later conversation.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -76,7 +77,7 @@ Use this to track multi-step work: post the full plan up front, then re-send the
       content: { type: "string", description: "The stored plan rendered as a checklist" },
     },
   },
-  handler: async (args, _config, session) => {
+  handler: async (args, config, session) => {
     try {
       const plan = parsePlan(args.plan);
 
@@ -93,6 +94,10 @@ Use this to track multi-step work: post the full plan up front, then re-send the
 
       const explanation = typeof args.explanation === "string" ? args.explanation : undefined;
       session.plan = { explanation, plan };
+
+      // Best effort: a plan the model can see is worth more than a plan that
+      // failed to persist, so a read-only state directory must not fail the call.
+      savePlan(config, session.plan);
 
       return { content: [{ type: "text", text: renderPlan(session.plan) }] };
     } catch (err: any) {

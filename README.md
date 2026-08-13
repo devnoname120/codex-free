@@ -6,7 +6,7 @@ A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: 
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
-Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
+Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. v0.7.0 addresses the one thing Codex never had to solve — a context window far smaller than the task — by bounding what a tool call can return and keeping a plan and notes on disk across conversations. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
 
 ## Architecture
 
@@ -25,7 +25,9 @@ flowchart LR
     Exec["exec_command\nwrite_stdin"]
     Agent["view_image\nupdate_plan\nclock_curr_time\nclock_sleep"]
     Env["get_agent_brief\nget_environment\nget_project_doc"]
+    Mem["remember\nrecall"]
     WorkDir[("Project\nDirectory")]
+    State[("~/.codex-free\nmemory.json")]
 
     ChatGPT -- "HTTPS" --> Tunnel
     Tunnel -- "HTTP\n/mcp" --> Server
@@ -39,6 +41,7 @@ flowchart LR
     Tools --> Exec
     Tools --> Agent
     Tools --> Env
+    Tools --> Mem
 
     FS --> WorkDir
     Search --> WorkDir
@@ -48,6 +51,7 @@ flowchart LR
     Exec --> WorkDir
     Agent --> WorkDir
     Env --> WorkDir
+    Mem --> State
 ```
 
 ## Quick start
@@ -74,7 +78,7 @@ Structured primitives — cheaper and safer than shelling out for the same job, 
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read a file's contents, with optional line offset/limit |
+| `read_file` | Read a file's contents, a bounded window at a time, with optional line offset/limit |
 | `write_file` | Write content to a file, creating parent directories if needed |
 | `run_command` | Execute a command in the work directory (allowlist-restricted) |
 | `git_status` | Show git status, parsed into changed files with status codes |
@@ -94,21 +98,23 @@ Ported from Codex (`codex-rs/core/src/tools`, commit `2230d64`):
 | `exec_command` | `exec_command` | Run a shell command; returns output, or a session id if it is still running |
 | `write_stdin` | `write_stdin` | Write to (or poll) a running `exec_command` session |
 | `view_image` | `view_image` | Load a local image file for visual inspection |
-| `update_plan` | `update_plan` | Track a multi-step plan for the current session |
+| `update_plan` | `update_plan` | Track a multi-step plan; saved to disk so a later conversation can pick it up |
 | `clock_curr_time` | `clock.curr_time` | Current time in UTC |
 | `clock_sleep` | `clock.sleep` | Pause for a given duration |
 
 Codex's dotted names are flattened to underscores because MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`.
 
-Three tools have no Codex counterpart:
+Five tools have no Codex counterpart:
 
 | Tool | Description |
 |------|-------------|
-| `get_agent_brief` | Return the whole operating brief — behaviour, environment and project rules — in one call |
+| `get_agent_brief` | Return the whole operating brief — behaviour, environment, saved state and project rules — in one call |
 | `get_environment` | Report the OS, the shell `exec_command` uses, the work directory, and what the policy allows |
 | `get_project_doc` | Read the project's `AGENTS.md` instructions |
+| `remember` | Save one durable note about the task under a short key |
+| `recall` | Return the plan and notes saved by earlier turns or earlier conversations |
 
-Codex needs none of them: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. See [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host) and [AGENTS.md](#agentsmd).
+Codex needs the first three for none of these reasons: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. It needs `remember` and `recall` for the opposite reason: its context is large and its session state lives in the CLI process, whereas the client here is a chat window that loses the conversation. See [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host), [AGENTS.md](#agentsmd) and [Context and memory](#context-and-memory).
 
 Two deliberate differences from Codex:
 
@@ -149,6 +155,16 @@ All paths are resolved relative to `--work-dir`.
     "maxBytes": 32768,
     "fallbackFilenames": [],
     "rootMarkers": [".git"]
+  },
+  "output": {
+    "maxFileLines": 1000,
+    "maxFileBytes": 131072,
+    "maxEntries": 500,
+    "maxTreeNodes": 1000
+  },
+  "memory": {
+    "enabled": true,
+    "maxBytes": 16384
   }
 }
 ```
@@ -174,17 +190,55 @@ The `projectDoc` block governs [AGENTS.md](#agentsmd) discovery. All three keys 
 | `fallbackFilenames` | `[]` | Extra filenames to try per directory, after `AGENTS.override.md` and `AGENTS.md` |
 | `rootMarkers` | `[".git"]` | Filenames or directories that mark the project root; an empty list stops the walk at the work directory |
 
+The `output` block bounds what a single tool call may return. See [Context and memory](#context-and-memory):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `maxFileLines` | `1000` | Lines `read_file` returns per call; a caller's own `limit` can lower this but not raise it |
+| `maxFileBytes` | `131072` | Byte ceiling for the same window, which is what actually bounds a minified file |
+| `maxEntries` | `500` | Results per `glob` or `list_directory` call |
+| `maxTreeNodes` | `1000` | Nodes in one `tree` walk, counted across the whole tree rather than per directory |
+
+The `memory` block governs `remember`, `recall` and the plan `update_plan` saves:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | `false` turns persistence off entirely; nothing is read or written |
+| `dir` | `~/.codex-free/projects/<name>-<hash of work-dir>` | Where the state file lives. Outside the repository by default |
+| `maxBytes` | `16384` | Budget for all notes together. A note over it is rejected, not silently evicted |
+
+## Context and memory
+
+Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. v0.7.0 attacks both halves of that.
+
+**Spend the window on less.** Every tool that could return an unbounded amount of text now stops at a budget and says so on its last line, naming the argument that continues from where it stopped:
+
+```
+(showing lines 1-1000 of 4820 — call again with offset=1000 for the rest)
+```
+
+That line matters as much as the cap. Silent truncation reads as "that was the whole file", which is worse than no cap at all. `read_file` has a byte ceiling as well as a line one, because a minified bundle is a single line several megabytes long that a line cap alone would hand back in full. `exec_command` and `grep` were already bounded, ported that way from Codex.
+
+**Keep what would be expensive to rediscover.** `remember` writes one keyed note; `recall` hands back the notes and the current plan. `update_plan` now persists too, so the plan survives the conversation that made it. Writing to a key that exists replaces it, and an empty value deletes it — a keyed store stays current where an append log accumulates contradictions until it is worthless.
+
+State lives in `~/.codex-free/projects/<name>-<hash>/memory.json`, keyed by the absolute work directory. Nothing is written into the repository you pointed the server at, and two checkouts of the same repo do not share notes.
+
+Because `instructions` is rebuilt for every MCP session, a new conversation opens with the saved plan and notes already in front of it, under a `## Saved state` heading between the environment and `AGENTS.md`. If the client ignores `instructions`, one `recall` gets the same thing.
+
+The division of labour is worth keeping straight: `AGENTS.md` is what is true of the **project** and belongs in the repo; notes are what is true of the **task in flight** and belong here.
+
 ## Acting as a Codex agent
 
 A tool list says what a model *can* do; it says nothing about how a careful engineer uses it. Codex closes that gap with a system prompt, and since v0.6.0 so does this bridge — the behavioural half of `codex-rs/core/gpt-5.2-codex_prompt.md` is ported into the server's `instructions`.
 
 That brief is what stops the client rewriting a file it never read, reverting your uncommitted work, reaching for `git reset --hard`, or making a one-step plan. It carries Codex's editing constraints (ASCII by default, comments only where they earn their place, `apply_patch` over rewrites, and the dirty-worktree rules in full), its planning rules, its code-review posture, and its habit of reporting back concisely without pasting files you already have on disk.
 
-The `initialize` response layers three things in Codex's own order, each outranking the one above it:
+The `initialize` response layers Codex's three in Codex's own order, each outranking the one above it, plus one Codex has no need for:
 
 1. **The agent brief** — how to behave.
 2. **The environment** — OS, shell, work directory, command policy.
-3. **`AGENTS.md`** — the project speaking for itself, behind the `--- project-doc ---` marker.
+3. **Saved state** — the plan and notes left by earlier work, when there are any. See [Context and memory](#context-and-memory).
+4. **`AGENTS.md`** — the project speaking for itself, behind the `--- project-doc ---` marker.
 
 Three parts of Codex's prompt are deliberately dropped. Its `rg` preference is redundant here, since `grep` and `glob` are tools that behave the same on every OS. Its final-answer style rules and clickable file-reference syntax both exist to drive a terminal renderer, and an MCP client renders markdown — importing them would produce CLI-flavoured output in a chat window. What those sections were *for* — brevity, not dumping files, relaying output the user cannot see — is kept.
 
@@ -253,6 +307,7 @@ Instructions are built per MCP session, so editing `AGENTS.md` takes effect on t
 
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside `--work-dir`.
 - **One bounded exception**: [AGENTS.md](#agentsmd) discovery reads above `--work-dir`, up to the nearest `.git`. Nothing else does. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory.
+- **One bounded write outside the work directory**: `remember` and `update_plan` write `memory.json` under `~/.codex-free/`, deliberately outside the repository so nothing lands in your git history. It holds whatever the model chose to note about the task — read it if you want to know, delete the directory to forget, or set `memory.enabled` to `false` to never write it. See [Context and memory](#context-and-memory).
 - **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected. `exec_command` checks the same list plus `exec.extraAllowedCommands`, at every command position in the string.
 - **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
 

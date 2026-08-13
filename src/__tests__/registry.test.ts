@@ -2,9 +2,9 @@ import { describe, test, expect } from "bun:test";
 import { loadTools } from "../registry.js";
 
 describe("loadTools", () => {
-  test("loads all 21 tools", () => {
+  test("loads all 23 tools", () => {
     const tools = loadTools();
-    expect(tools.length).toBe(21);
+    expect(tools.length).toBe(23);
   });
 
   test("all tools have unique names", () => {
@@ -56,6 +56,8 @@ describe("loadTools", () => {
     expect(names).toContain("get_environment");
     expect(names).toContain("get_project_doc");
     expect(names).toContain("get_agent_brief");
+    expect(names).toContain("remember");
+    expect(names).toContain("recall");
   });
 
   test("all tool names are valid MCP tool names", () => {

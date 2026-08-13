@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_BRIEF, buildInstructions } from "../instructions.js";
+import { remember, savePlan } from "../memory.js";
 import { PROJECT_DOC_SEPARATOR } from "../project-doc.js";
 import type { AppConfig } from "../types.js";
 
@@ -25,6 +26,8 @@ function makeConfig(shell = "bash"): AppConfig {
     tree: { defaultDepth: 3, ignore: [] },
     command: { defaultTimeout: 30000, maxTimeout: 120000 },
     exec: { mode: "allowlist", extraAllowedCommands: [], maxSessions: 8, defaultShell: shell },
+    // Pinned so the suite never reads or writes the running user's real state.
+    memory: { dir: join(root, "state") },
   };
 }
 
@@ -37,6 +40,12 @@ describe("AGENT_BRIEF", () => {
     expect(AGENT_BRIEF).toContain("Do not amend a commit unless explicitly asked");
     expect(AGENT_BRIEF).toContain("Read a file before editing it");
     expect(AGENT_BRIEF).toContain("Do not make single-step plans");
+  });
+
+  test("tells the model what to do about a context window it will lose", () => {
+    expect(AGENT_BRIEF).toContain("Call recall when you are resuming work");
+    expect(AGENT_BRIEF).toContain("Call remember when you learn something");
+    expect(AGENT_BRIEF).toContain("a truncated result says so on its last line");
   });
 
   test("names the tools its advice is about, so the advice is actionable", () => {
@@ -80,5 +89,39 @@ describe("buildInstructions", () => {
     const text = buildInstructions(makeConfig());
     expect(text).not.toContain(PROJECT_DOC_SEPARATOR);
     expect(text).toContain("Working directory:");
+  });
+
+  test("says nothing about saved state when nothing was saved", () => {
+    expect(buildInstructions(makeConfig())).not.toContain("## Saved state");
+  });
+
+  // The point of persisting anything: a conversation that starts after the
+  // previous one was lost opens with the plan and notes already in front of it.
+  test("hands back the saved plan and notes to a fresh session", () => {
+    const config = makeConfig();
+    savePlan(config, { plan: [{ step: "port the tools", status: "in_progress" }] });
+    remember(config, "why-bun", "The runtime ships a test runner.", "2026-01-01T00:00:00.000Z");
+
+    const text = buildInstructions(config);
+    expect(text).toContain("## Saved state");
+    expect(text).toContain("[~] port the tools");
+    expect(text).toContain("- why-bun: The runtime ships a test runner.");
+  });
+
+  test("puts saved state before the project doc, which stays last", () => {
+    const config = makeConfig();
+    writeFileSync(join(root, "AGENTS.md"), "Never force-push.");
+    remember(config, "k", "v", "2026-01-01T00:00:00.000Z");
+
+    const text = buildInstructions(config);
+    expect(text.indexOf("## Environment")).toBeLessThan(text.indexOf("## Saved state"));
+    expect(text.indexOf("## Saved state")).toBeLessThan(text.indexOf(PROJECT_DOC_SEPARATOR));
+  });
+
+  test("omits saved state entirely when memory is disabled", () => {
+    const config = makeConfig();
+    remember(config, "k", "v", "2026-01-01T00:00:00.000Z");
+    const disabled = { ...config, memory: { ...config.memory, enabled: false } };
+    expect(buildInstructions(disabled)).not.toContain("## Saved state");
   });
 });
