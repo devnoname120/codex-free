@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { AppConfig, PlanState } from "./types.js";
@@ -93,14 +103,134 @@ export function loadMemory(config: AppConfig): Memory {
   }
 }
 
-/** Write memory back. Returns false when persistence failed, never throws. */
-export function saveMemory(config: AppConfig, memory: Memory): boolean {
-  if (!memoryEnabled(config)) return false;
+export function lockPath(config: AppConfig): string {
+  return `${memoryPath(config)}.lock`;
+}
+
+// A held lock older than this is assumed to belong to a writer that crashed
+// mid-write, and is stolen. A real write here is sub-millisecond, so any lock
+// this old is certainly abandoned.
+const LOCK_STALE_MS = 10_000;
+// How long to wait for a live lock before giving up and writing anyway. Losing
+// the race only costs last-writer-wins, which the atomic rename keeps valid, so
+// a bounded wait is better than failing the note outright.
+const LOCK_TIMEOUT_MS = 2_000;
+const LOCK_RETRY_MS = 20;
+
+let atomicCounter = 0;
+
+/** Block the current (synchronous) call for `ms`, without a busy spin. */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // SharedArrayBuffer/Atomics may be unavailable; fall back to returning
+    // immediately, which only means the lock is retried sooner.
+  }
+}
+
+/**
+ * Take the per-project write lock, so two processes pointed at the same work
+ * directory cannot lose each other's notes to an interleaved read-modify-write.
+ *
+ * Returns the open descriptor to release, or `null` if the lock could not be
+ * taken within the timeout — in which case the caller writes anyway, degrading
+ * to last-writer-wins rather than dropping the note.
+ */
+function acquireLock(config: AppConfig): number | null {
+  const lock = lockPath(config);
   try {
     mkdirSync(memoryDir(config), { recursive: true });
-    writeFileSync(memoryPath(config), `${JSON.stringify(memory, null, 2)}\n`, "utf8");
+  } catch {
+    return null;
+  }
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx");
+      try {
+        writeFileSync(fd, `${process.pid} ${new Date().toISOString()}\n`);
+      } catch {
+        // The holder record is only a debugging aid; the lock still holds.
+      }
+      return fd;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") return null;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(lock);
+          continue;
+        }
+      } catch {
+        // The lock vanished between open and stat; retry immediately.
+        continue;
+      }
+      if (Date.now() >= deadline) return null;
+      sleepSync(LOCK_RETRY_MS);
+    }
+  }
+}
+
+function releaseLock(config: AppConfig, fd: number): void {
+  try {
+    closeSync(fd);
+  } catch {
+    // Already closed; the unlink below is what actually frees the lock.
+  }
+  try {
+    unlinkSync(lockPath(config));
+  } catch {
+    // Stolen by another writer after we timed out, or never created.
+  }
+}
+
+/**
+ * Run a read-modify-write of the state file under the write lock.
+ *
+ * When memory is disabled nothing touches disk, so no lock is taken. If the
+ * lock cannot be acquired the work still runs — the atomic write keeps the file
+ * valid, and the cost is only that a concurrent writer's change may win.
+ */
+function withMemoryLock<T>(config: AppConfig, fn: () => T): T {
+  if (!memoryEnabled(config)) return fn();
+  const fd = acquireLock(config);
+  try {
+    return fn();
+  } finally {
+    if (fd !== null) releaseLock(config, fd);
+  }
+}
+
+/**
+ * Write memory back atomically. Returns false when persistence failed, never
+ * throws.
+ *
+ * The write goes to a per-process temp file that is flushed and then renamed
+ * over the target: rename is atomic on a single volume, so a reader or a
+ * crashing writer never sees a half-written file. Callers that read-modify-write
+ * should hold the lock via `withMemoryLock` around the whole load/save.
+ */
+export function saveMemory(config: AppConfig, memory: Memory): boolean {
+  if (!memoryEnabled(config)) return false;
+  const target = memoryPath(config);
+  const tmp = `${target}.tmp.${process.pid}.${atomicCounter++}`;
+  try {
+    mkdirSync(memoryDir(config), { recursive: true });
+    const fd = openSync(tmp, "w");
+    try {
+      writeFileSync(fd, `${JSON.stringify(memory, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, target);
     return true;
   } catch {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Nothing to clean up, or it was already renamed into place.
+    }
     return false;
   }
 }
@@ -129,6 +259,15 @@ export interface RememberResult {
  * knows which of its own notes matter least, and this server does not.
  */
 export function remember(
+  config: AppConfig,
+  key: string,
+  value: string,
+  now: string,
+): RememberResult {
+  return withMemoryLock(config, () => rememberLocked(config, key, value, now));
+}
+
+function rememberLocked(
   config: AppConfig,
   key: string,
   value: string,
@@ -179,9 +318,11 @@ export function remember(
 
 /** Persist the plan alongside the notes, leaving the notes untouched. */
 export function savePlan(config: AppConfig, plan: PlanState | null): boolean {
-  const memory = loadMemory(config);
-  memory.plan = plan;
-  return saveMemory(config, memory);
+  return withMemoryLock(config, () => {
+    const memory = loadMemory(config);
+    memory.plan = plan;
+    return saveMemory(config, memory);
+  });
 }
 
 const STATUS_MARKERS: Record<string, string> = {

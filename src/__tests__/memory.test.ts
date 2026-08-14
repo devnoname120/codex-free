@@ -1,10 +1,21 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  openSync,
+  closeSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_MEMORY_MAX_BYTES,
   loadMemory,
+  lockPath,
   memoryDir,
   memoryEnabled,
   memoryMaxBytes,
@@ -192,6 +203,52 @@ describe("savePlan", () => {
 
   test("returns false instead of throwing when memory is disabled", () => {
     expect(savePlan(makeConfig({ enabled: false }), null)).toBe(false);
+  });
+});
+
+describe("durability", () => {
+  // The temp file an atomic write goes through, and the write lock, must both be
+  // gone once the call returns — a stray temp would read back as a phantom file
+  // and a stray lock would stall the next writer until it went stale.
+  test("leaves no temp or lock files behind", () => {
+    const config = makeConfig();
+    remember(config, "k", "v", NOW);
+    savePlan(config, { plan: [{ step: "one", status: "pending" }] });
+    const entries = readdirSync(memoryDir(config));
+    expect(entries).toEqual(["memory.json"]);
+  });
+
+  // A writer that crashed mid-write leaves its lock; a later writer must steal it
+  // once it is old enough rather than wait on it forever.
+  test("steals a stale lock and still writes", () => {
+    const config = makeConfig();
+    remember(config, "before", "x", NOW);
+    const lock = lockPath(config);
+    closeSync(openSync(lock, "w"));
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+
+    const result = remember(config, "after", "y", NOW);
+    expect(result.ok).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    expect(Object.keys(loadMemory(config).notes).sort()).toEqual(["after", "before"]);
+  });
+
+  // Losing the lock race must degrade to a valid write, not a dropped note: a
+  // fresh foreign lock is waited on, then the write proceeds anyway.
+  test("still writes when a live lock is held, degrading to last-writer-wins", () => {
+    const config = makeConfig();
+    const lock = lockPath(config);
+    remember(config, "seed", "1", NOW);
+    const held = openSync(lock, "w"); // simulate another writer holding the lock
+    try {
+      const result = remember(config, "raced", "2", NOW);
+      expect(result.ok).toBe(true);
+      expect(loadMemory(config).notes["raced"]!.value).toBe("2");
+    } finally {
+      closeSync(held);
+      rmSync(lock, { force: true });
+    }
   });
 });
 
