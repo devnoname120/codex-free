@@ -2,6 +2,7 @@ import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { resolveSafePath } from "../safe-path.js";
 import { entryBudget, limitList } from "../output-budget.js";
+import { buildIgnore, isIgnored } from "../ignore.js";
 import type { ToolDefinition } from "../types.js";
 
 export default {
@@ -25,7 +26,15 @@ export default {
         ? resolveSafePath(args.path as string, config.workDir)
         : config.workDir;
 
+      const ig = buildIgnore(config);
+      // Escape hatch: when the caller points `path` straight at an ignored
+      // directory (e.g. list_directory node_modules), show its contents rather
+      // than an empty listing. Filtering only hides ignored entries from an
+      // otherwise-visible directory.
+      const targetIgnored = isIgnored(ig, dirPath, config.workDir);
+
       const all = (await readdir(dirPath, { withFileTypes: true }))
+        .filter((e) => targetIgnored || !isIgnored(ig, join(dirPath, e.name), config.workDir))
         .sort((a, b) => a.name.localeCompare(b.name));
       // Cut before stat()ing, so a directory with 50k files does not cost 50k
       // syscalls to produce output that would be thrown away anyway.

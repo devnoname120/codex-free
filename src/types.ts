@@ -164,6 +164,19 @@ export interface SkillsConfig {
 }
 
 /**
+ * Governs what the file-walking tools (glob, grep, tree, list_directory) skip.
+ * Every field is optional; see `src/ignore.ts` for the defaults.
+ */
+export interface IgnoreConfig {
+  /** Read the work directory's .gitignore and .git/info/exclude. Default true. */
+  useGitignore?: boolean;
+  /** Skip the built-in set (node_modules, dist, caches, …). Default true. */
+  useDefaultPatterns?: boolean;
+  /** Extra gitignore-syntax patterns applied on top, for every tool. */
+  customPatterns?: string[];
+}
+
+/**
  * Ceilings on what one tool call may return. Every field is optional; see
  * `src/output-budget.ts` for the defaults and why each cap exists.
  */
@@ -190,6 +203,7 @@ export interface AppConfig {
   output?: OutputConfig;
   memory?: MemoryConfig;
   skills?: SkillsConfig;
+  ignore?: IgnoreConfig;
 }
 
 export interface CliArgs {

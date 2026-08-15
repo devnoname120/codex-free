@@ -1,7 +1,8 @@
 import { readdir, readFile } from "fs/promises";
 import { join, relative } from "path";
 import { resolveSafePath } from "../safe-path.js";
-import type { ToolDefinition } from "../types.js";
+import { buildIgnore, isIgnored, shouldPrune } from "../ignore.js";
+import type { AppConfig, ToolDefinition } from "../types.js";
 
 export default {
   name: "grep",
@@ -44,7 +45,7 @@ export default {
     }
 
     try {
-      const files = await collectFiles(searchPath, includePattern);
+      const files = await collectFiles(searchPath, includePattern, config);
       const results: string[] = [];
       let matchCount = 0;
       let truncated = false;
@@ -126,13 +127,10 @@ const BINARY_EXTENSIONS = new Set([
   ".wasm", ".o", ".a", ".lib",
 ]);
 
-const IGNORE_DIRS = new Set([
-  "node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv", ".cache",
-]);
-
-async function collectFiles(dir: string, includeGlob?: string): Promise<string[]> {
+async function collectFiles(dir: string, includeGlob: string | undefined, config: AppConfig): Promise<string[]> {
   const files: string[] = [];
   const extMatch = includeGlob?.startsWith("*.") ? includeGlob.slice(1) : undefined;
+  const ig = buildIgnore(config);
 
   async function walk(current: string) {
     let entries;
@@ -143,16 +141,18 @@ async function collectFiles(dir: string, includeGlob?: string): Promise<string[]
     }
 
     for (const entry of entries) {
+      const abs = join(current, entry.name);
       if (entry.isDirectory()) {
-        if (!IGNORE_DIRS.has(entry.name)) {
-          await walk(join(current, entry.name));
+        if (!shouldPrune(ig, entry.name, abs, config.workDir)) {
+          await walk(abs);
         }
       } else {
         const name = entry.name;
         const ext = name.lastIndexOf(".") >= 0 ? name.slice(name.lastIndexOf(".")) : "";
         if (BINARY_EXTENSIONS.has(ext)) continue;
         if (extMatch && ext !== extMatch) continue;
-        files.push(join(current, name));
+        if (isIgnored(ig, abs, config.workDir)) continue;
+        files.push(abs);
       }
     }
   }

@@ -2,7 +2,9 @@ import { readdir } from "fs/promises";
 import { join } from "path";
 import { resolveSafePath } from "../safe-path.js";
 import { treeNodeBudget } from "../output-budget.js";
-import type { ToolDefinition } from "../types.js";
+import { buildIgnore, isIgnored, shouldPrune } from "../ignore.js";
+import type { Ignore } from "ignore";
+import type { AppConfig, ToolDefinition } from "../types.js";
 
 export default {
   name: "tree",
@@ -26,10 +28,10 @@ export default {
         ? resolveSafePath(args.path as string, config.workDir)
         : config.workDir;
       const maxDepth = typeof args.depth === "number" ? args.depth : config.tree.defaultDepth;
-      const ignoreSet = new Set(config.tree.ignore);
+      const ig = buildIgnore(config);
 
       const state: WalkState = { lines: ["."], remaining: treeNodeBudget(config), stopped: false };
-      await buildTree(rootPath, "", 0, maxDepth, ignoreSet, state);
+      await buildTree(rootPath, "", 0, maxDepth, ig, config, state);
 
       const text = state.stopped
         ? `${state.lines.join("\n")}\n\n(stopped at ${state.lines.length - 1} nodes — lower "depth" or point "path" at a subdirectory)`
@@ -57,14 +59,22 @@ async function buildTree(
   prefix: string,
   depth: number,
   maxDepth: number,
-  ignore: Set<string>,
+  ig: Ignore,
+  config: AppConfig,
   state: WalkState,
 ): Promise<void> {
   if (depth >= maxDepth || state.stopped) return;
 
   const entries = await readdir(dirPath, { withFileTypes: true });
   const filtered = entries
-    .filter((e) => !ignore.has(e.name))
+    .filter((e) => {
+      const abs = join(dirPath, e.name);
+      // Directories the walk should never descend are also never shown; a file
+      // the ignore policy hides is dropped the same way.
+      return e.isDirectory()
+        ? !shouldPrune(ig, e.name, abs, config.workDir)
+        : !isIgnored(ig, abs, config.workDir);
+    })
     .sort((a, b) => {
       if (a.isDirectory() && !b.isDirectory()) return -1;
       if (!a.isDirectory() && b.isDirectory()) return 1;
@@ -86,7 +96,7 @@ async function buildTree(
     state.remaining--;
 
     if (entry.isDirectory()) {
-      await buildTree(join(dirPath, entry.name), prefix + childPrefix, depth + 1, maxDepth, ignore, state);
+      await buildTree(join(dirPath, entry.name), prefix + childPrefix, depth + 1, maxDepth, ig, config, state);
       if (state.stopped) return;
     }
   }

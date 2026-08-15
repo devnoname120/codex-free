@@ -1,6 +1,7 @@
 import fg from "fast-glob";
 import { resolveSafePath } from "../safe-path.js";
 import { entryBudget, limitList } from "../output-budget.js";
+import { buildIgnore, fastGlobIgnore, isIgnored } from "../ignore.js";
 import type { ToolDefinition } from "../types.js";
 
 export default {
@@ -30,19 +31,25 @@ export default {
         cwd: basePath,
         dot: false,
         onlyFiles: true,
+        ignore: fastGlobIgnore(config),
       });
+
+      const ig = buildIgnore(config);
 
       // fast-glob does not sandbox its `cwd`: patterns like "../../etc/passwd"
       // or absolute patterns (e.g. "C:/Windows/win.ini") can match outside of
       // `basePath`. Re-validate every match against the work-dir boundary so
-      // glob can't be used to bypass resolveSafePath.
+      // glob can't be used to bypass resolveSafePath. Then drop anything the
+      // ignore policy hides — fast-glob's own `ignore` is a perf floor only and
+      // does not read .gitignore, so correctness is enforced here.
       const files = matches.filter((f) => {
+        let abs: string;
         try {
-          resolveSafePath(f, basePath);
-          return true;
+          abs = resolveSafePath(f, basePath);
         } catch {
           return false;
         }
+        return !isIgnored(ig, abs, config.workDir);
       });
 
       if (files.length === 0) {

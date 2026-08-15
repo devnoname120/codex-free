@@ -5,6 +5,11 @@
     "defaultDepth": 3,
     "ignore": ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv"]
   },
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
   "command": {
     "defaultTimeout": 30000,
     "maxTimeout": 120000

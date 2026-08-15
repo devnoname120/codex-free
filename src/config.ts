@@ -82,5 +82,6 @@ export async function loadConfig(cli: CliArgs): Promise<AppConfig> {
     output: fileConfig.output ?? {},
     memory: fileConfig.memory ?? {},
     skills: fileConfig.skills ?? {},
+    ignore: fileConfig.ignore ?? {},
   };
 }

@@ -42,7 +42,7 @@ function createMcpServer(
   session: ReturnType<typeof createSessionState>,
 ): Server {
   const server = new Server(
-    { name: "codex-free", version: "0.8.1" },
+    { name: "codex-free", version: "0.9.0" },
     {
       capabilities: { tools: { listChanged: false } },
       instructions: buildInstructions(config),
