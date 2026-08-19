@@ -7,90 +7,116 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          bun-version: latest
+          components: rustfmt, clippy
 
-      - run: bun install --frozen-lockfile
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Type check
-        run: bunx tsc --noEmit
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: bun test
+        run: cargo test --all
 
   build:
     needs: check
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: bun-linux-x64
-            os: linux
-            arch: x64
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             ext: ""
             archive: tar.gz
-          - target: bun-linux-arm64
-            os: linux
-            arch: arm64
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
             ext: ""
             archive: tar.gz
-          - target: bun-darwin-x64
-            os: darwin
-            arch: x64
+            cross_linker: aarch64-linux-gnu-gcc
+            apt_packages: gcc-aarch64-linux-gnu
+          - name: darwin-x64
+            os: macos-13
+            target: x86_64-apple-darwin
             ext: ""
             archive: tar.gz
-          - target: bun-darwin-arm64
-            os: darwin
-            arch: arm64
+          - name: darwin-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
             ext: ""
             archive: tar.gz
-          - target: bun-windows-x64
-            os: windows
-            arch: x64
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
             ext: ".exe"
             archive: zip
 
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          bun-version: latest
+          targets: ${{ matrix.target }}
 
-      - run: bun install --frozen-lockfile
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross linker (linux-arm64)
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
 
       - name: Build
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross_linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage artifacts
+        shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          BINARY_NAME="codex-free${{ matrix.ext }}"
-          bun build --compile --target=${{ matrix.target }} --outfile="${BINARY_NAME}" main.ts
+          STAGE="codexrr-${VERSION}-${{ matrix.name }}"
+          mkdir "${STAGE}"
+          cp "target/${{ matrix.target }}/release/codexrr${{ matrix.ext }}" "${STAGE}/"
+          cp codex.config.json LICENSE README.md "${STAGE}/"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "BINARY_NAME=${BINARY_NAME}" >> "$GITHUB_ENV"
+          echo "STAGE=${STAGE}" >> "$GITHUB_ENV"
 
       - name: Package tar.gz
         if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
-          ARCHIVE="codex-free-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
-          tar czf "${ARCHIVE}" "${BINARY_NAME}" codex.config.json LICENSE README.md
-          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          tar czf "${STAGE}.tar.gz" "${STAGE}"
+          echo "ARCHIVE=${STAGE}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package zip
         if: matrix.archive == 'zip'
+        shell: bash
         run: |
-          ARCHIVE="codex-free-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
-          zip "${ARCHIVE}" "${BINARY_NAME}" codex.config.json LICENSE README.md
-          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          7z a "${STAGE}.zip" "${STAGE}" >/dev/null
+          echo "ARCHIVE=${STAGE}.zip" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-free-${{ matrix.os }}-${{ matrix.arch }}
+          name: codexrr-${{ matrix.name }}
           path: ${{ env.ARCHIVE }}
 
   release:
