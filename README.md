@@ -1,4 +1,4 @@
-# Codexrr
+# Codex-free (rewritten to Rust)
 
 *Codex Free, rewritten in Rust (but you still have to buy ChatGPT Plus)*
 
