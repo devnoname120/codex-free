@@ -15,6 +15,7 @@ pub mod ignore_rules;
 pub mod instructions;
 pub mod memory;
 pub mod output_budget;
+pub mod project_bindings;
 pub mod project_doc;
 pub mod registry;
 pub mod safe_path;
