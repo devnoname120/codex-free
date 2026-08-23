@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-session project-root selection.** Start with `--multi-project` (or
+  `multiProject: true`) to make `--work-dir` an access root. Each MCP session
+  binds once with `set_project_root`; project tools, command working directories,
+  git operations, `AGENTS.md`, repo skills, plans, and notes then use that
+  session's independently selected root. Canonical containment checks reject
+  traversal and symlink escapes, and project-aware tools remain unavailable until
+  selection.
+
 ## [1.0.0] - 2026-08-19
 
 The first Rust release. The server was rewritten from Bun + TypeScript to Rust

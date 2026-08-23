@@ -22,9 +22,13 @@ use crate::types::{
     about = "Codex Free MCP bridge (Rust): expose Codex-style agent tools over Streamable HTTP."
 )]
 pub struct Cli {
-    /// Project directory the tools operate on (required).
+    /// Project directory, or the access root when --multi-project is enabled.
     #[arg(long = "work-dir")]
     pub work_dir: String,
+
+    /// Let each MCP session bind once to a project below --work-dir.
+    #[arg(long = "multi-project")]
+    pub multi_project: bool,
 
     /// Server port. Default: 3000 (or the config file's value).
     #[arg(long)]
@@ -114,6 +118,7 @@ struct PartialExec {
 struct FileConfig {
     api_key: Option<String>,
     port: Option<u16>,
+    multi_project: Option<bool>,
     allowed_commands: Option<Vec<String>>,
     tree: Option<PartialTree>,
     command: Option<PartialCommand>,
@@ -133,6 +138,7 @@ struct FileConfig {
 pub fn default_config(work_dir: std::path::PathBuf) -> AppConfig {
     AppConfig {
         work_dir,
+        multi_project: false,
         api_key: None,
         port: 3000,
         allowed_commands: default_allowed_commands(),
@@ -248,6 +254,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
 
     Ok(AppConfig {
         work_dir,
+        multi_project: cli.multi_project || file.multi_project.unwrap_or(false),
         api_key: cli.api_key.or(file.api_key),
         port: cli.port.or(file.port).unwrap_or(3000),
         allowed_commands: file

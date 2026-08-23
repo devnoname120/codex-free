@@ -25,8 +25,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::require_auth;
 use crate::exec_sessions::SessionState;
-use crate::instructions::build_instructions;
-use crate::registry::load_tools;
+use crate::instructions::build_initial_instructions;
+use crate::registry::load_tools_for_mode;
 use crate::tool::Tool;
 use crate::types::{AppConfig, ToolContent, ToolResult};
 
@@ -62,7 +62,7 @@ impl ServerHandler for CodexHandler {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("codexrr", "1.0.0"))
-            .with_instructions(build_instructions(&self.config))
+            .with_instructions(build_initial_instructions(&self.config))
     }
 
     async fn list_tools(
@@ -102,7 +102,22 @@ impl ServerHandler for CodexHandler {
             return Ok(result.into());
         };
 
-        let mut result = tool.call(args, &self.config, &self.session).await;
+        let effective_config = if tool.requires_project_root() {
+            match self.session.effective_config(&self.config) {
+                Ok(config) => Some(config),
+                Err(error) => {
+                    let result = ToolResult::error(error);
+                    tracing::info!("  tool: {name} -> error");
+                    return Ok(to_call_tool_result(result).into());
+                }
+            }
+        } else {
+            None
+        };
+        let call_config = effective_config
+            .as_ref()
+            .unwrap_or_else(|| self.config.as_ref());
+        let mut result = tool.call(args, call_config, &self.session).await;
 
         // Fill in the `structuredContent` the MCP spec expects from any tool that
         // advertises an `outputSchema`. Most tools use the `{ content: string }`
@@ -147,7 +162,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let bridge_report = bridge.report;
     let _bridge_services = bridge.services;
 
-    let mut all_tools = load_tools();
+    let mut all_tools = load_tools_for_mode(config.multi_project);
     let native: std::collections::HashSet<&'static str> =
         all_tools.iter().map(|t| t.name()).collect();
     let mut seen = native.clone();
@@ -216,7 +231,12 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         "\nCodex Free MCP Bridge (Rust) running on http://localhost:{}",
         config.port
     );
-    println!("Work directory: {}", config.work_dir.display());
+    if config.multi_project {
+        println!("Project access root: {}", config.work_dir.display());
+        println!("Project mode: per-session selection required");
+    } else {
+        println!("Work directory: {}", config.work_dir.display());
+    }
     println!(
         "Tools loaded ({tool_count}): {} native + {bridged_count} bridged from upstream MCP servers",
         tool_count - bridged_count
