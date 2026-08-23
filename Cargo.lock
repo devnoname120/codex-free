@@ -310,6 +310,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "getrandom 0.2.17",
  "globset",
  "http",
  "ignore",
@@ -324,11 +325,13 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "zeroize",
  "zip",
 ]
 
