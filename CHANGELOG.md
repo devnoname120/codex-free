@@ -12,6 +12,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   session that has neither produced output nor received stdin for
   `exec.idleTimeoutMs` (default 5 minutes; `0` disables it), so a forgotten or
   wedged interactive process no longer lingers holding a process slot.
+- Automatic supervision of the native OpenAI Secure MCP Tunnel. The HTTP server
+  stays up while the outbound tunnel-client process is restarted on exit, backed
+  off linearly, and bounded by a circuit breaker (giving up after five restarts
+  within a rolling 60-second window) so a flapping tunnel cannot loop forever.
+- Continuous health monitoring of the running tunnel: its loopback readiness and
+  control-plane poll metric are probed every 10 seconds, and three consecutive
+  failures — distinguishing an unreachable probe from a reachable-but-unhealthy
+  tunnel — trigger the same supervised restart path.
 
 ### Fixed
 
