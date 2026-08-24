@@ -21,6 +21,8 @@ pub mod process_env;
 pub mod project_bindings;
 pub mod project_doc;
 pub mod registry;
+pub mod review;
+pub mod review_ui;
 pub mod safe_path;
 pub mod server;
 pub mod skills;

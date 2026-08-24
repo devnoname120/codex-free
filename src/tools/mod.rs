@@ -19,6 +19,7 @@ pub mod recall;
 pub mod remember;
 pub mod run_command;
 pub mod set_project_root;
+pub mod show_changes;
 pub mod skills_list;
 pub mod skills_read;
 pub mod tree;

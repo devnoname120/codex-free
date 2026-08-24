@@ -107,6 +107,10 @@ impl Tool for ExecCommand {
         Some(unified_exec_output_schema())
     }
 
+    fn may_modify_project(&self) -> bool {
+        true
+    }
+
     async fn call(&self, args: Value, config: &AppConfig, session: &SessionState) -> ToolResult {
         let cmd = arg_str(&args, "cmd").unwrap_or("");
         if cmd.trim().is_empty() {

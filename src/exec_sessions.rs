@@ -18,6 +18,7 @@ use tokio::sync::{Mutex as TokioMutex, Notify};
 
 use crate::process_env::scrub_untrusted_child_env;
 use crate::project_bindings::{ProjectBindingScope, ProjectRootSelection, resolve_project_root};
+use crate::review::TransportReviewState;
 use crate::types::{AppConfig, PlanState};
 
 // Codex constants (shell_spec.rs). Kept as code, not config, because they are
@@ -338,6 +339,7 @@ pub struct SessionState {
     next_exec_id: AtomicU64,
     pub plan: StdMutex<Option<PlanState>>,
     project_root: StdMutex<Option<PathBuf>>,
+    review: TransportReviewState,
 }
 
 impl Default for SessionState {
@@ -347,6 +349,7 @@ impl Default for SessionState {
             next_exec_id: AtomicU64::new(1),
             plan: StdMutex::new(None),
             project_root: StdMutex::new(None),
+            review: TransportReviewState::new(),
         }
     }
 }
@@ -450,6 +453,10 @@ impl SessionState {
 
     pub fn selected_project_root(&self) -> Option<PathBuf> {
         self.project_root.lock().unwrap().clone()
+    }
+
+    pub fn review_state(&self) -> TransportReviewState {
+        self.review.clone()
     }
 }
 
