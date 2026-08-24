@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-24
+
 ### Added
 
 - Idle timeout for resident `exec_command` sessions. A background reaper closes a
@@ -138,7 +140,8 @@ filename sort uses byte/Unicode ordering rather than `localeCompare`;
 `write_file` reports UTF-8 byte counts; `exec_command` uses plain pipes, not a
 PTY. See the README's "Notes on the port" for the full list.
 
-[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.1.0
 [1.0.1]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.0
