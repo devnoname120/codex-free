@@ -22,5 +22,11 @@
     ],
     "maxSessions": 8,
     "idleTimeoutMs": 300000
+  },
+  "audit": {
+    "logFile": null,
+    "includeCommandPreview": false,
+    "commandPreviewMaxBytes": 512,
+    "redactEnv": []
   }
 }

@@ -237,8 +237,8 @@ pub fn assert_exec_allowed(cmd: &str, config: &AppConfig) -> Result<(), ExecPoli
 mod tests {
     use super::*;
     use crate::types::{
-        CommandConfig, ExecConfig, IgnoreConfig, MemoryConfig, OutputConfig, ProjectDocConfig,
-        SkillsConfig, TreeConfig,
+        AuditConfig, CommandConfig, ExecConfig, IgnoreConfig, MemoryConfig, OutputConfig,
+        ProjectDocConfig, SkillsConfig, TreeConfig,
     };
 
     fn cfg(mode: ExecMode) -> AppConfig {
@@ -268,6 +268,7 @@ mod tests {
             memory: MemoryConfig::default(),
             skills: SkillsConfig::default(),
             ignore: IgnoreConfig::default(),
+            audit: AuditConfig::default(),
             allowed_hosts: vec![],
             openai_tunnel: None,
             mcp_servers: std::collections::HashMap::new(),

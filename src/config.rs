@@ -6,15 +6,15 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use serde::Deserialize;
 
 use std::collections::HashMap;
 
 use crate::codex_mcp::{codex_config_path, discover_codex_mcp_servers};
 use crate::types::{
-    AppConfig, CommandConfig, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec, MemoryConfig,
-    OpenAiTunnelConfig, OutputConfig, ProjectDocConfig, SkillsConfig, TreeConfig,
+    AppConfig, AuditConfig, CommandConfig, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec,
+    MemoryConfig, OpenAiTunnelConfig, OutputConfig, ProjectDocConfig, SkillsConfig, TreeConfig,
 };
 
 #[derive(Parser, Debug)]
@@ -23,6 +23,15 @@ use crate::types::{
     about = "Codex Free MCP bridge (Rust): expose Codex-style agent tools over Streamable HTTP."
 )]
 pub struct Cli {
+    /// Increase codex-free diagnostics. Repeat for trace-level diagnostics.
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        visible_alias = "log-tool-calls",
+        action = ArgAction::Count
+    )]
+    pub verbose: u8,
+
     /// Project directory, or the access root when --multi-project is enabled.
     #[arg(long = "work-dir")]
     pub work_dir: String,
@@ -43,6 +52,18 @@ pub struct Cli {
     /// Config file path. Default: ./codex.config.json (tolerated if missing).
     #[arg(long)]
     pub config: Option<String>,
+
+    /// Append privacy-preserving tool activity events to a JSONL file.
+    #[arg(long = "audit", visible_alias = "audit-log", value_name = "FILE")]
+    pub audit_log: Option<String>,
+
+    /// Include bounded, redacted previews of exec_command and run_command.
+    #[arg(long = "audit-command-preview")]
+    pub audit_command_preview: bool,
+
+    /// Redact the value of this environment variable from command previews.
+    #[arg(long = "audit-redact-env", value_name = "NAME", action = ArgAction::Append)]
+    pub audit_redact_env: Vec<String>,
 
     /// Existing OpenAI Secure MCP Tunnel id. Enables the outbound native tunnel.
     #[arg(long = "openai-tunnel-id")]
@@ -140,6 +161,15 @@ struct PartialOpenAiTunnel {
     api_key_ref: Option<String>,
     client_path: Option<String>,
     organization_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialAudit {
+    log_file: Option<String>,
+    include_command_preview: Option<bool>,
+    command_preview_max_bytes: Option<usize>,
+    redact_env: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -252,6 +282,7 @@ struct FileConfig {
     memory: Option<MemoryConfig>,
     skills: Option<SkillsConfig>,
     ignore: Option<IgnoreConfig>,
+    audit: Option<PartialAudit>,
     codex_mcp: Option<CodexMcpConfig>,
     allowed_hosts: Option<Vec<String>>,
     openai_tunnel: Option<PartialOpenAiTunnel>,
@@ -338,6 +369,7 @@ pub fn default_config(work_dir: std::path::PathBuf) -> AppConfig {
         memory: MemoryConfig::default(),
         skills: SkillsConfig::default(),
         ignore: IgnoreConfig::default(),
+        audit: AuditConfig::default(),
         allowed_hosts: Vec::new(),
         openai_tunnel: None,
         mcp_servers: HashMap::new(),
@@ -458,6 +490,49 @@ fn resolve_openai_tunnel(
     }))
 }
 
+fn resolve_audit(file: Option<PartialAudit>, cli: &Cli) -> Result<AuditConfig, String> {
+    const MAX_COMMAND_PREVIEW_BYTES: usize = 16 * 1024;
+
+    let file = file.unwrap_or_default();
+    let log_file = cli
+        .audit_log
+        .as_deref()
+        .or(file.log_file.as_deref())
+        .map(resolve_path);
+    let include_command_preview =
+        cli.audit_command_preview || file.include_command_preview.unwrap_or(false);
+    let command_preview_max_bytes = file
+        .command_preview_max_bytes
+        .unwrap_or_else(|| AuditConfig::default().command_preview_max_bytes);
+    if !(1..=MAX_COMMAND_PREVIEW_BYTES).contains(&command_preview_max_bytes) {
+        return Err(format!(
+            "audit.commandPreviewMaxBytes must be between 1 and {MAX_COMMAND_PREVIEW_BYTES}"
+        ));
+    }
+    if include_command_preview && log_file.is_none() {
+        return Err("audit command previews require audit.logFile or --audit <FILE>".to_string());
+    }
+
+    let mut redact_env = file.redact_env.unwrap_or_default();
+    redact_env.extend(cli.audit_redact_env.iter().cloned());
+    for name in &redact_env {
+        if !valid_env_name(name) {
+            return Err(format!(
+                "audit.redactEnv contains an invalid environment-variable name: {name}"
+            ));
+        }
+    }
+    redact_env.sort();
+    redact_env.dedup();
+
+    Ok(AuditConfig {
+        log_file,
+        include_command_preview,
+        command_preview_max_bytes,
+        redact_env,
+    })
+}
+
 /// Load and merge config. Errors are returned as strings for the caller to
 /// print and exit on, mirroring the TS which validates and `process.exit`s.
 pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
@@ -546,6 +621,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
 
     let mcp_servers = resolve_mcp_servers(&mut file);
     let openai_tunnel = resolve_openai_tunnel(file.openai_tunnel, &cli)?;
+    let audit = resolve_audit(file.audit, &cli)?;
     let api_key = cli.api_key.or(file.api_key);
     if api_key.is_some() && openai_tunnel.is_some() {
         return Err(
@@ -570,6 +646,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         memory: file.memory.unwrap_or_default(),
         skills: file.skills.unwrap_or_default(),
         ignore: file.ignore.unwrap_or_default(),
+        audit,
         allowed_hosts: file.allowed_hosts.unwrap_or_default(),
         openai_tunnel,
         mcp_servers,
@@ -580,6 +657,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn imported_server() -> McpServerSpec {
         McpServerSpec {
@@ -598,16 +676,90 @@ mod tests {
 
     fn cli(work_dir: &Path, config: &Path) -> Cli {
         Cli {
+            verbose: 0,
             work_dir: work_dir.to_string_lossy().into_owned(),
             multi_project: false,
             port: None,
             api_key: None,
             config: Some(config.to_string_lossy().into_owned()),
+            audit_log: None,
+            audit_command_preview: false,
+            audit_redact_env: Vec::new(),
             openai_tunnel_id: None,
             openai_tunnel_api_key_ref: None,
             openai_tunnel_client: None,
             openai_tunnel_organization_id: None,
         }
+    }
+
+    #[test]
+    fn cli_parses_verbose_and_audit_controls() {
+        let parsed = Cli::try_parse_from([
+            "codex-free",
+            "-v",
+            "--log-tool-calls",
+            "--work-dir",
+            "/tmp/project",
+            "--audit-log",
+            "/tmp/audit.jsonl",
+            "--audit-command-preview",
+            "--audit-redact-env",
+            "GITHUB_TOKEN",
+            "--audit-redact-env",
+            "CUSTOM_SECRET",
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.verbose, 2);
+        assert_eq!(parsed.audit_log.as_deref(), Some("/tmp/audit.jsonl"));
+        assert!(parsed.audit_command_preview);
+        assert_eq!(parsed.audit_redact_env, ["GITHUB_TOKEN", "CUSTOM_SECRET"]);
+    }
+
+    #[test]
+    fn cli_audit_settings_override_and_extend_file_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("config.json");
+        let file_log = root.path().join("from-file.jsonl");
+        let cli_log = root.path().join("from-cli.jsonl");
+        std::fs::write(
+            &config_path,
+            serde_json::to_vec(&json!({
+                "codexMcp": { "enabled": false },
+                "audit": {
+                    "logFile": file_log,
+                    "includeCommandPreview": false,
+                    "commandPreviewMaxBytes": 1024,
+                    "redactEnv": ["FILE_SECRET"]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut args = cli(root.path(), &config_path);
+        args.audit_log = Some(cli_log.to_string_lossy().into_owned());
+        args.audit_command_preview = true;
+        args.audit_redact_env = vec!["CLI_SECRET".to_string(), "FILE_SECRET".to_string()];
+
+        let config = load_config(args).unwrap();
+        assert_eq!(config.audit.log_file.as_deref(), Some(cli_log.as_path()));
+        assert!(config.audit.include_command_preview);
+        assert_eq!(config.audit.command_preview_max_bytes, 1024);
+        assert_eq!(config.audit.redact_env, ["CLI_SECRET", "FILE_SECRET"]);
+    }
+
+    #[test]
+    fn command_previews_require_an_audit_log() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"codexMcp":{"enabled":false},"audit":{"includeCommandPreview":true}}"#,
+        )
+        .unwrap();
+
+        let error = load_config(cli(root.path(), &config_path)).unwrap_err();
+        assert!(error.contains("require audit.logFile"));
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! that session ends. ChatGPT project selection is stored separately by its
 //! stable conversation metadata and survives transport replacement.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::audit::{
+    AuditLogger, AuditScope, argument_field_names, summarize_arguments, summarize_output,
+};
 use crate::auth::{generate_internal_bearer_token, require_auth};
 use crate::exec_sessions::SessionState;
 use crate::instructions::build_initial_instructions;
@@ -62,7 +66,37 @@ pub struct CodexHandler {
     config: Arc<AppConfig>,
     tools: Arc<Vec<Box<dyn Tool>>>,
     project_bindings: Arc<ProjectBindingStore>,
+    audit: Option<Arc<AuditLogger>>,
     session: SessionState,
+}
+
+impl CodexHandler {
+    fn selected_project_root(
+        &self,
+        conversation: Option<&ConversationIdentity>,
+    ) -> Option<PathBuf> {
+        if !self.config.multi_project {
+            return Some(self.config.work_dir.clone());
+        }
+        match conversation {
+            Some(identity) => self
+                .project_bindings
+                .selected_project_root(&self.config, identity)
+                .ok()
+                .flatten(),
+            None => self.session.selected_project_root(),
+        }
+    }
+
+    fn audit_scope(&self, conversation: Option<&ConversationIdentity>) -> AuditScope {
+        let project_root = self.selected_project_root(conversation);
+        AuditScope::new(
+            self.session.audit_id(),
+            conversation,
+            &self.config.work_dir,
+            project_root.as_deref(),
+        )
+    }
 }
 
 /// Convert this repo's [`ToolResult`] into rmcp's `CallToolResult`.
@@ -126,26 +160,54 @@ impl ServerHandler for CodexHandler {
                 .as_ref()
                 .and_then(ConversationIdentity::from_request_meta)
         });
-        let name = request.name.as_ref();
+        let name = request.name.as_ref().to_string();
         let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
+        let tool = self.tools.iter().find(|tool| tool.name() == name);
+        let needs_scope = self.audit.is_some()
+            || tracing::enabled!(target: "codex_free::tool", tracing::Level::DEBUG);
+        let input_schema = needs_scope
+            .then(|| tool.map(|tool| tool.input_schema()))
+            .flatten();
+        let start_scope = needs_scope.then(|| self.audit_scope(conversation.as_ref()));
+        let audit_call = self.audit.as_ref().and_then(|audit| {
+            start_scope
+                .as_ref()
+                .map(|scope| audit.begin_tool(&name, &args, input_schema.as_ref(), scope))
+        });
+        if let Some(scope) = start_scope.as_ref() {
+            tracing::debug!(
+                target: "codex_free::tool",
+                tool = %name,
+                transport_session_id = scope.transport_session_id,
+                conversation_id = scope.conversation_id.as_deref().unwrap_or("-"),
+                project_id = scope.project_id.as_deref().unwrap_or("-"),
+                argument_fields = %argument_field_names(&args, input_schema.as_ref()),
+                "tool started"
+            );
+        }
+        if tracing::enabled!(target: "codex_free::tool", tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "codex_free::tool",
+                tool = %name,
+                argument_summary = %summarize_arguments(&args, input_schema.as_ref()),
+                "tool arguments summarized"
+            );
+        }
 
-        let Some(tool) = self.tools.iter().find(|t| t.name() == name) else {
-            let result =
-                CallToolResult::error(vec![ContentBlock::text(format!("Unknown tool: {name}"))]);
-            return Ok(result.into());
-        };
-
-        let mut result = if name == SetProjectRoot::NAME {
-            if let Some(identity) = conversation.as_ref() {
-                select_and_render(&args, |path| {
-                    self.project_bindings
-                        .select_project_root(&self.config, identity, path)
-                })
-            } else {
-                tool.call(args, &self.config, &self.session).await
+        let started = Instant::now();
+        let mut result = match tool {
+            None => ToolResult::error(format!("Unknown tool: {name}")),
+            Some(tool) if name == SetProjectRoot::NAME => {
+                if let Some(identity) = conversation.as_ref() {
+                    select_and_render(&args, |path| {
+                        self.project_bindings
+                            .select_project_root(&self.config, identity, path)
+                    })
+                } else {
+                    tool.call(args, &self.config, &self.session).await
+                }
             }
-        } else {
-            let effective_config = if tool.requires_project_root() {
+            Some(tool) if tool.requires_project_root() => {
                 let resolved = match conversation.as_ref() {
                     Some(identity) => self
                         .project_bindings
@@ -153,20 +215,11 @@ impl ServerHandler for CodexHandler {
                     None => self.session.effective_config(&self.config),
                 };
                 match resolved {
-                    Ok(config) => Some(config),
-                    Err(error) => {
-                        let result = ToolResult::error(error);
-                        tracing::info!("  tool: {name} -> error");
-                        return Ok(to_call_tool_result(result).into());
-                    }
+                    Ok(effective_config) => tool.call(args, &effective_config, &self.session).await,
+                    Err(error) => ToolResult::error(error),
                 }
-            } else {
-                None
-            };
-            let call_config = effective_config
-                .as_ref()
-                .unwrap_or_else(|| self.config.as_ref());
-            tool.call(args, call_config, &self.session).await
+            }
+            Some(tool) => tool.call(args, &self.config, &self.session).await,
         };
 
         // Fill in the `structuredContent` the MCP spec expects from any tool that
@@ -174,7 +227,8 @@ impl ServerHandler for CodexHandler {
         // schema, for which the text they return *is* the structured form; tools
         // with a different schema build their own and pass through. Errors are
         // left alone — the spec exempts `isError` results.
-        if tool.output_schema().is_some()
+        if let Some(tool) = tool
+            && tool.output_schema().is_some()
             && tool.fills_structured_content()
             && !result.is_error
             && result.structured_content.is_none()
@@ -182,10 +236,32 @@ impl ServerHandler for CodexHandler {
             result.structured_content = Some(json!({ "content": result.joined_text() }));
         }
 
+        let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         tracing::info!(
-            "  tool: {name} -> {}",
-            if result.is_error { "error" } else { "ok" }
+            target: "codex_free::tool",
+            tool = %name,
+            status = if result.is_error { "error" } else { "ok" },
+            duration_ms,
+            "tool completed"
         );
+        if tracing::enabled!(target: "codex_free::tool", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "codex_free::tool",
+                tool = %name,
+                output_summary = %summarize_output(&result),
+                "tool output summarized"
+            );
+        }
+        if let (Some(audit), Some(call), Some(start_scope)) =
+            (&self.audit, audit_call.as_ref(), start_scope.as_ref())
+        {
+            if name == SetProjectRoot::NAME {
+                let finish_scope = self.audit_scope(conversation.as_ref());
+                audit.finish_tool(call, &name, &result, duration_ms, &finish_scope);
+            } else {
+                audit.finish_tool(call, &name, &result, duration_ms, start_scope);
+            }
+        }
         Ok(to_call_tool_result(result).into())
     }
 }
@@ -203,6 +279,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         }
         config.api_key = Some(generate_internal_bearer_token()?);
     }
+    let audit = AuditLogger::open(&config)?.map(Arc::new);
     // Gateway-mode upstreams write their generated skills here; keyed by port so
     // concurrent instances don't clobber each other, and rebuilt fresh per start.
     let gen_dir = std::env::temp_dir()
@@ -259,6 +336,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let factory_config = config.clone();
     let factory_tools = tools.clone();
     let factory_project_bindings = project_bindings.clone();
+    let factory_audit = audit.clone();
     let service = StreamableHttpService::new(
         move || {
             let session = SessionState::new();
@@ -267,6 +345,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
                 config: factory_config.clone(),
                 tools: factory_tools.clone(),
                 project_bindings: factory_project_bindings.clone(),
+                audit: factory_audit.clone(),
                 session,
             })
         },
@@ -336,6 +415,17 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         println!("Auth: enabled (bearer token)");
     } else {
         println!("Auth: disabled (no --api-key)");
+    }
+    if let Some(audit) = audit.as_ref() {
+        println!("Audit log: {}", audit.path().display());
+        println!(
+            "Audit command previews: {}",
+            if audit.command_previews_enabled() {
+                "enabled (bounded and redacted)"
+            } else {
+                "disabled"
+            }
+        );
     }
     if !native_tunnel {
         println!("\nAdd to ChatGPT > Plugins > New Plugin:");

@@ -1,17 +1,13 @@
 use clap::Parser;
 
 use codex_free::config::{Cli, load_config};
+use codex_free::logging;
 use codex_free::server::start_http_server;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
+    logging::init(cli.verbose);
     let config = match load_config(cli) {
         Ok(c) => c,
         Err(e) => {
