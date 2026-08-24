@@ -14,10 +14,14 @@ This document explains how it is put together and why. For usage, see
 
 ```
 ChatGPT / MCP client
-        │  HTTPS
+        │
         ▼
-   public tunnel (ngrok / cloudflared)
-        │  HTTP  POST/GET/DELETE /mcp
+ OpenAI Secure MCP Tunnel
+        ▲
+        │ outbound HTTPS polling / responses
+        │
+ official tunnel-client-runtime
+        │ loopback HTTP  POST/GET/DELETE /mcp
         ▼
 ┌──────────────────────────────────────────────┐
 │ codex-free  (axum + tokio + rmcp)                │
@@ -65,8 +69,9 @@ Three surfaces reach the model:
    `Drop` kills any resident `exec_command` shells.
 
 Cross-cutting HTTP concerns live in the axum layer: a `/health` route, a
-`tower-http` CORS layer (exposing `mcp-session-id`), and a bearer-auth middleware
-that bypasses `/health`.
+bearer-auth middleware that bypasses `/health`, and—in externally exposed
+mode—a `tower-http` CORS layer exposing `mcp-session-id`. Native tunnel mode
+does not install that permissive CORS layer.
 
 ---
 
@@ -111,9 +116,12 @@ user-level Codex MCP definitions through `codex_mcp.rs`, then applies explicit
 ## 4. MCP server layer (`server.rs`, `auth.rs`)
 
 - **Transport**: `rmcp::transport::streamable_http_server::StreamableHttpService`,
-  configured with `json_response = true` and DNS-rebinding host checks disabled by
-  default (so it works behind a tunnel presenting an arbitrary hostname; set
-  `allowedHosts` to re-enable).
+  configured with `json_response = true`. Externally exposed mode preserves the
+  legacy behavior: bind `0.0.0.0`, allow arbitrary Host values unless
+  `allowedHosts` is configured, and install permissive CORS for MCP clients.
+  Native tunnel mode instead binds `127.0.0.1`, forces Host validation to
+  loopback authorities, omits permissive CORS, and requires a random
+  process-private bearer token generated at startup.
 - **Session model**: the factory runs per session, so each conversation gets its
   own `SessionState`. Upstream MCP connections and the tool registry are shared
   (`Arc`) across sessions.
@@ -122,6 +130,40 @@ user-level Codex MCP definitions through `codex_mcp.rs`, then applies explicit
 - **Errors**: a tool that fails returns `Ok(CallToolResult::error(...))`
   (`isError: true`) so the caller sees the message; only an unknown tool name is
   an error *result* as well. Protocol errors are avoided.
+
+### 4.1 Native OpenAI tunnel (`openai_tunnel.rs`)
+
+The native tunnel is a supervised sidecar, not a second MCP implementation.
+Codex Free continues to serve its existing Streamable HTTP endpoint, while the
+official OpenAI `tunnel-client-runtime` forwards tunnel commands to
+`http://127.0.0.1:<port>/mcp`.
+
+Startup is ordered and fail-closed:
+
+1. Generate a high-entropy internal bearer token and bind the authenticated MCP
+   listener to loopback.
+2. Resolve an explicit official client binary or install the pinned runtime-only
+   release under `~/.codex-free/openai-tunnel/`.
+3. Verify the official release archive against the per-platform SHA-256 embedded
+   in the Codex Free build, install the exact expected executable atomically with
+   private permissions, and persist a local integrity manifest. Re-check the
+   executable hash and compatibility on later starts.
+4. Resolve the configured runtime-key reference, launch the client with a clean
+   allowlisted environment, and inject both the runtime key and internal MCP
+   bearer under child-only synthetic variable names. Static MCP and discovery
+   headers carry the internal bearer to the loopback endpoint. Model-controlled
+   and upstream MCP subprocesses explicitly remove the original key variable.
+5. Require the runtime-only surfaces it actually exports: `/readyz` must return
+   success and the labeled
+   `commands_poll_last_successful_timestamp_seconds` metric must be non-zero.
+
+Codex Free watches the HTTP server, tunnel child, `SIGINT`, and `SIGTERM`
+concurrently. Failure of either process shuts down the other. Normal shutdown
+sends `SIGTERM` on Unix, waits under a deadline, then force-kills if necessary;
+Windows uses the child-process kill path. The MCP cancellation token and Axum
+graceful-shutdown signal are triggered together; lingering HTTP connections are
+aborted after a bounded grace period. Runtime logs and health URL files live in
+a private per-run temporary directory and are removed after shutdown.
 
 ---
 
@@ -153,6 +195,8 @@ the original order and rejects duplicate names.
 | `exec_sessions.rs` | Unified-exec sessions: shell resolution, PowerShell exit-code wrapping, background stdout/stderr drain tasks, process-group kill, output truncation (UTF-16 units to match the TS). |
 | `apply_patch.rs` | The Codex patch format: parse then apply, atomically, with fuzzy context matching and CRLF preservation. |
 | `memory.rs` | Working memory outside the repo, keyed by a hash of the normalized work dir, with `O_EXCL` locking and atomic writes. |
+| `openai_tunnel.rs` | Verified installation and lifecycle supervision for OpenAI's outbound Secure MCP Tunnel runtime. |
+| `process_env.rs` | Child-process environment boundaries: isolate the tunnel runtime and remove tunnel credentials from model-controlled and upstream subprocesses. |
 | `project_doc.rs` | `AGENTS.md` discovery from project root down to the work dir under a byte budget. |
 | `skills.rs` | `SKILL.md` discovery (see §8). |
 | `codex_mcp.rs` | Read-only import of local stdio MCP definitions from `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, with secret-safe diagnostics. |
@@ -256,6 +300,12 @@ startup banner prints the exact file with `Config:`). All fields optional.
   "apiKey": "…",                      // or --api-key; bearer token
   "allowedCommands": ["git", "node", …],   // run_command allowlist
   "allowedHosts": [],                  // DNS-rebinding allowlist; empty = any host
+  "openaiTunnel": {
+    "tunnelId": "tunnel_0123456789abcdef0123456789abcdef",
+    "apiKeyRef": "env:CONTROL_PLANE_API_KEY",
+    "clientPath": "…",                // optional; otherwise verified managed install
+    "organizationId": "org_…"          // optional
+  },
   "tree":   { "defaultDepth": 3, "ignore": ["node_modules", ".git", …] },
   "command":{ "defaultTimeout": 30000, "maxTimeout": 120000 },   // ms
   "exec":   { "mode": "allowlist"|"unrestricted",
@@ -297,6 +347,10 @@ Auth: disabled (no --api-key)
 - `Config:` reveals the common mistake of editing a different file than the one
   loaded (config is resolved relative to the launch directory unless `--config`).
 - The `Upstream MCP servers:` block reports each server's outcome.
+- In native tunnel mode, the banner also reports loopback-only exposure, the
+  internal-auth boundary, managed runtime version or operator-supplied client,
+  and local `/readyz` and `/metrics` URLs. The tunnel ID, runtime key, and
+  internal bearer are never printed.
 
 ---
 
@@ -320,7 +374,7 @@ units to match the TS `text.length` / `text.slice`.
 
 ## 12. Testing
 
-- **334 tests** — unit tests inside modules plus integration tests under `tests/`
+- Unit tests inside modules plus integration tests under `tests/`
   (`tempfile`-isolated), ported from the TS Bun suite.
 - Memory / skills tests pin `memory.dir` / `skills.dirs` to temp dirs so they never
   touch the real home; plugin discovery is suppressed when `skills.dirs` is set.
@@ -345,3 +399,5 @@ Run: `cargo test`. Build a standalone binary: `cargo build --release`.
 | codex-free exposes the tools (`Tools loaded (109)`) but the client shows only 25 | The client caches the tool manifest — **remove and re-add the connector** so it re-fetches `tools/list`. There is no tool-count cap at 109 (the hard API cap is 128). |
 | A client won't surface a large bridged set at all | Use `"mode": "gateway"` to collapse the server into one tool + a skill, or `"tools": [...]` to expose a curated few. |
 | Upstream `type: "sse"`/`"http"` | Not bridged yet (stdio only); reported as unsupported instead of breaking the config. |
+| Native tunnel never becomes ready | Check the banner's loopback `/readyz` and `/metrics` URLs and the redacted startup error. Codex Free requires runtime readiness plus one successful control-plane poll; the runtime key needs the applicable Tunnels **Read** + **Use** permissions. The runtime-only binary has no `/ui` or `/api/status` surface. |
+| Native tunnel key is rejected before startup | `apiKeyRef` must be `env:NAME` or `file:/path`. The referenced value must exist; on Unix, key files must not grant group/other access. |
