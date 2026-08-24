@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-24
 
 ### Added
 
@@ -104,5 +104,6 @@ filename sort uses byte/Unicode ordering rather than `localeCompare`;
 `write_file` reports UTF-8 byte counts; `exec_command` uses plain pipes, not a
 PTY. See the README's "Notes on the port" for the full list.
 
+[1.1.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.1.0
 [1.0.1]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.0
