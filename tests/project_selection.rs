@@ -6,7 +6,9 @@ use codex_free::config::{Cli, default_config, load_config};
 use codex_free::exec_sessions::SessionState;
 use codex_free::instructions::{build_initial_instructions, build_instructions};
 use codex_free::memory::memory_dir;
-use codex_free::project_bindings::{ConversationIdentity, ProjectBindingScope, ProjectBindingStore};
+use codex_free::project_bindings::{
+    ConversationIdentity, ProjectBindingScope, ProjectBindingStore,
+};
 use codex_free::tool::Tool;
 use codex_free::tools::git_status::GitStatus;
 use codex_free::tools::read_file::ReadFile;

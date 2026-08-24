@@ -418,7 +418,9 @@ async fn install_managed_client(
     let archive = fetch_bytes(&archive_url).await?;
     let archive_hash = sha256_hex(&archive);
     if archive_hash != asset.archive_sha256 {
-        bail!("OpenAI tunnel runtime archive does not match the hash pinned by this Codex Free build");
+        bail!(
+            "OpenAI tunnel runtime archive does not match the hash pinned by this Codex Free build"
+        );
     }
 
     let binary = extract_binary(&archive, &asset.binary_name)?;
