@@ -60,9 +60,39 @@ pub const AGENT_BRIEF: &str = concat!(
     "- Offer natural next steps briefly — tests, a commit, a build — and say plainly what you could not verify yourself.",
 );
 
-/// The brief a client sees at initialize time, and the exact text
-/// `get_agent_brief` returns. Rebuilt per MCP session so a conversation that
-/// starts after a previous one was lost opens with the plan and notes in front.
+/// The initialize-time instructions. Multi-project initialization deliberately
+/// omits project state because ChatGPT's conversation ID arrives on tool calls,
+/// after the MCP initialize exchange.
+pub fn build_initial_instructions(config: &AppConfig) -> String {
+    if !config.multi_project {
+        return build_instructions(config);
+    }
+
+    let mut environment = describe_environment(config);
+    environment.cwd = "<not selected>".to_string();
+
+    [
+        AGENT_BRIEF.to_string(),
+        String::new(),
+        "## Project selection".to_string(),
+        String::new(),
+        "This server is running in multi-project mode. Project identity cannot be resolved during MCP initialization because stable ChatGPT conversation metadata arrives on tool calls.".to_string(),
+        format!("Project access root: {}", config.work_dir.display()),
+        "For ChatGPT, a project selected earlier in this same conversation is restored automatically even after an MCP reconnect or server restart. A new conversation has no binding.".to_string(),
+        "Call `get_agent_brief` first. If this conversation is not yet bound, call `set_project_root` with an existing directory beneath the access root, then call `get_agent_brief` again. Re-selecting the same canonical directory is idempotent.".to_string(),
+        "A ChatGPT conversation cannot switch projects; start a new chat for another project. Clients without stable `openai/session` metadata fall back to an MCP-transport-session binding and must select again after reconnecting.".to_string(),
+        "Follow the environment, saved state, skills, and project instructions returned by `get_agent_brief` for the rest of the task.".to_string(),
+        String::new(),
+        "## Environment".to_string(),
+        String::new(),
+        render_environment(&environment),
+    ]
+    .join("\n")
+}
+
+/// The full project-aware brief returned by `get_agent_brief`, and used at
+/// initialize time in single-project mode. Rebuilt from the effective project
+/// config so a later conversation can recover the saved plan and notes.
 ///
 /// Codex assembles the same layers in the same order: base instructions, then
 /// `<environment_context>`, then the skill catalogue, then the project's

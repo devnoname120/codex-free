@@ -2,11 +2,13 @@
 //! the axum wiring (`/mcp` Streamable HTTP, `/health`, CORS, bearer auth).
 //!
 //! Ports `src/server.ts`. rmcp's `StreamableHttpService` owns the transport and
-//! MCP session lifecycle: the service factory runs once per MCP session, so a
-//! fresh [`SessionState`] lives inside each handler and is dropped — killing any
-//! resident exec processes — when the session ends.
+//! MCP session lifecycle: the service factory runs once per transport session,
+//! so a fresh [`SessionState`] owns resident exec processes and drops them when
+//! that session ends. ChatGPT project selection is stored separately by its
+//! stable conversation metadata and survives transport replacement.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{Router, extract::State, response::Json, routing::get};
 use rmcp::{
@@ -21,20 +23,28 @@ use rmcp::{
     },
 };
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::auth::require_auth;
+use crate::auth::{generate_internal_bearer_token, require_auth};
 use crate::exec_sessions::SessionState;
-use crate::instructions::build_instructions;
-use crate::registry::load_tools;
+use crate::instructions::build_initial_instructions;
+use crate::project_bindings::{ConversationIdentity, ProjectBindingStore};
+use crate::registry::load_tools_for_mode;
 use crate::tool::Tool;
+use crate::tools::set_project_root::{SetProjectRoot, select_and_render};
 use crate::types::{AppConfig, ToolContent, ToolResult};
+
+const HTTP_SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+type HttpServerTask = JoinHandle<Result<(), std::io::Error>>;
 
 /// One MCP session: shared config and tool registry, plus this session's own
 /// mutable state.
 pub struct CodexHandler {
     config: Arc<AppConfig>,
     tools: Arc<Vec<Box<dyn Tool>>>,
+    project_bindings: Arc<ProjectBindingStore>,
     session: SessionState,
 }
 
@@ -61,8 +71,8 @@ fn to_call_tool_result(result: ToolResult) -> CallToolResult {
 impl ServerHandler for CodexHandler {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("codex-free", "1.0.1"))
-            .with_instructions(build_instructions(&self.config))
+            .with_server_info(Implementation::new("codex-free", "1.1.0"))
+            .with_instructions(build_initial_instructions(&self.config))
     }
 
     async fn list_tools(
@@ -91,8 +101,14 @@ impl ServerHandler for CodexHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        let conversation = ConversationIdentity::from_request_meta(&context.meta).or_else(|| {
+            request
+                .meta
+                .as_ref()
+                .and_then(ConversationIdentity::from_request_meta)
+        });
         let name = request.name.as_ref();
         let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
 
@@ -102,7 +118,39 @@ impl ServerHandler for CodexHandler {
             return Ok(result.into());
         };
 
-        let mut result = tool.call(args, &self.config, &self.session).await;
+        let mut result = if name == SetProjectRoot::NAME {
+            if let Some(identity) = conversation.as_ref() {
+                select_and_render(&args, |path| {
+                    self.project_bindings
+                        .select_project_root(&self.config, identity, path)
+                })
+            } else {
+                tool.call(args, &self.config, &self.session).await
+            }
+        } else {
+            let effective_config = if tool.requires_project_root() {
+                let resolved = match conversation.as_ref() {
+                    Some(identity) => self
+                        .project_bindings
+                        .effective_config(&self.config, identity),
+                    None => self.session.effective_config(&self.config),
+                };
+                match resolved {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        let result = ToolResult::error(error);
+                        tracing::info!("  tool: {name} -> error");
+                        return Ok(to_call_tool_result(result).into());
+                    }
+                }
+            } else {
+                None
+            };
+            let call_config = effective_config
+                .as_ref()
+                .unwrap_or_else(|| self.config.as_ref());
+            tool.call(args, call_config, &self.session).await
+        };
 
         // Fill in the `structuredContent` the MCP spec expects from any tool that
         // advertises an `outputSchema`. Most tools use the `{ content: string }`
@@ -131,6 +179,13 @@ async fn health(State(tool_count): State<usize>) -> Json<Value> {
 
 /// Build the axum app and serve it. Ports `startHttpServer`.
 pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
+    let native_tunnel = config.openai_tunnel.is_some();
+    if native_tunnel {
+        if config.api_key.is_some() {
+            anyhow::bail!("native tunnel mode cannot use a caller-supplied local MCP API key");
+        }
+        config.api_key = Some(generate_internal_bearer_token()?);
+    }
     // Gateway-mode upstreams write their generated skills here; keyed by port so
     // concurrent instances don't clobber each other, and rebuilt fresh per start.
     let gen_dir = std::env::temp_dir()
@@ -139,6 +194,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let _ = std::fs::remove_dir_all(&gen_dir);
     config.generated_skills_dir = Some(gen_dir);
     let config = Arc::new(config);
+    let project_bindings = Arc::new(ProjectBindingStore::for_current_user());
 
     // Connect to any configured upstream MCP servers and merge their tools in.
     // The returned services must stay alive for the whole server lifetime, so
@@ -147,7 +203,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let bridge_report = bridge.report;
     let _bridge_services = bridge.services;
 
-    let mut all_tools = load_tools();
+    let mut all_tools = load_tools_for_mode(config.multi_project);
     let native: std::collections::HashSet<&'static str> =
         all_tools.iter().map(|t| t.name()).collect();
     let mut seen = native.clone();
@@ -171,10 +227,13 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let mut http_config =
         rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
     http_config.json_response = true;
+    let mcp_cancellation = http_config.cancellation_token.clone();
     // The original bridge accepted any Host so it works behind a tunnel that
     // presents an arbitrary hostname. Preserve that unless the operator lists
     // explicit hosts in the config.
-    if config.allowed_hosts.is_empty() {
+    if native_tunnel {
+        http_config.allowed_hosts = vec!["127.0.0.1".into(), "localhost".into(), "::1".into()];
+    } else if config.allowed_hosts.is_empty() {
         http_config.allowed_hosts.clear();
     } else {
         http_config.allowed_hosts = config.allowed_hosts.clone();
@@ -182,23 +241,19 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
 
     let factory_config = config.clone();
     let factory_tools = tools.clone();
+    let factory_project_bindings = project_bindings.clone();
     let service = StreamableHttpService::new(
         move || {
             Ok(CodexHandler {
                 config: factory_config.clone(),
                 tools: factory_tools.clone(),
+                project_bindings: factory_project_bindings.clone(),
                 session: SessionState::new(),
             })
         },
         Arc::new(LocalSessionManager::default()),
         http_config,
     );
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any)
-        .expose_headers([axum::http::HeaderName::from_static("mcp-session-id")]);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -207,16 +262,45 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             config.clone(),
             require_auth,
-        ))
-        .layer(cors);
+        ));
+    let app = if native_tunnel {
+        app
+    } else {
+        app.layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .expose_headers([axum::http::HeaderName::from_static("mcp-session-id")]),
+        )
+    };
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
+    let bind_host = if native_tunnel {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
+    let listener = tokio::net::TcpListener::bind((bind_host, config.port)).await?;
 
     println!(
-        "\nCodex Free MCP Bridge (Rust) running on http://localhost:{}",
-        config.port
+        "\nCodex Free MCP Bridge (Rust) running on http://{}:{}",
+        if native_tunnel {
+            "127.0.0.1"
+        } else {
+            "localhost"
+        },
+        config.port,
     );
-    println!("Work directory: {}", config.work_dir.display());
+    if config.multi_project {
+        println!("Project access root: {}", config.work_dir.display());
+        println!("Project mode: persistent ChatGPT conversation binding");
+        println!(
+            "Conversation bindings: {}",
+            project_bindings.base_dir().display()
+        );
+    } else {
+        println!("Work directory: {}", config.work_dir.display());
+    }
     println!(
         "Tools loaded ({tool_count}): {} native + {bridged_count} bridged from upstream MCP servers",
         tool_count - bridged_count
@@ -227,14 +311,215 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
             println!("  {line}");
         }
     }
-    if config.api_key.is_some() {
+    if native_tunnel {
+        println!("Local MCP auth: enabled (private per-process bearer token)");
+    } else if config.api_key.is_some() {
         println!("Auth: enabled (bearer token)");
     } else {
         println!("Auth: disabled (no --api-key)");
     }
-    println!("\nAdd to ChatGPT > Plugins > New Plugin:");
-    println!("  Server URL: https://<your-tunnel>/mcp\n");
+    if !native_tunnel {
+        println!("\nAdd to ChatGPT > Plugins > New Plugin:");
+        println!("  Server URL: https://<your-tunnel>/mcp\n");
+        axum::serve(listener, app).await?;
+        return Ok(());
+    }
 
-    axum::serve(listener, app).await?;
-    Ok(())
+    println!("Exposure: loopback only; starting OpenAI Secure MCP Tunnel");
+    run_with_openai_tunnel(listener, app, config, mcp_cancellation).await
+}
+
+async fn run_with_openai_tunnel(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    config: Arc<AppConfig>,
+    mcp_cancellation: CancellationToken,
+) -> anyhow::Result<()> {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut shutdown_tx = Some(shutdown_tx);
+    let mut server_task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    let start_tunnel = crate::openai_tunnel::start(&config);
+    tokio::pin!(start_tunnel);
+
+    let mut tunnel = tokio::select! {
+        server_result = &mut server_task => {
+            return flatten_server_result(server_result);
+        }
+        tunnel_result = &mut start_tunnel => {
+            match tunnel_result {
+                Ok(tunnel) => tunnel,
+                Err(error) => {
+                    stop_http_server(
+                        &mut shutdown_tx,
+                        &mcp_cancellation,
+                        server_task,
+                        HTTP_SERVER_STOP_TIMEOUT,
+                    ).await?;
+                    return Err(error.context("start OpenAI Secure MCP Tunnel"));
+                }
+            }
+        }
+        _ = shutdown_signal() => {
+            stop_http_server(
+                &mut shutdown_tx,
+                &mcp_cancellation,
+                server_task,
+                HTTP_SERVER_STOP_TIMEOUT,
+            ).await?;
+            return Ok(());
+        }
+    };
+
+    println!("OpenAI Secure MCP Tunnel: ready");
+    if config
+        .openai_tunnel
+        .as_ref()
+        .is_some_and(|settings| settings.client_path.is_some())
+    {
+        println!("Tunnel runtime: operator-supplied compatible tunnel client");
+    } else {
+        println!(
+            "Tunnel runtime: managed OpenAI tunnel-client-runtime v{}",
+            crate::openai_tunnel::TUNNEL_CLIENT_VERSION
+        );
+    }
+    println!("Tunnel readiness: {}/readyz", tunnel.health_url());
+    println!("Tunnel metrics: {}/metrics", tunnel.health_url());
+    println!("\nAdd a ChatGPT developer-mode connector/plugin:");
+    println!("  Connection type: Tunnel");
+    println!("  Tunnel: select the tunnel configured for this process");
+    println!("  Authentication: None");
+    println!("  Permissions: Allow all actions\n");
+
+    tokio::select! {
+        server_result = &mut server_task => {
+            let shutdown_result = tunnel.shutdown().await;
+            flatten_server_result(server_result)?;
+            shutdown_result
+        }
+        tunnel_error = tunnel.wait_for_exit() => {
+            stop_http_server(
+                &mut shutdown_tx,
+                &mcp_cancellation,
+                server_task,
+                HTTP_SERVER_STOP_TIMEOUT,
+            ).await?;
+            Err(tunnel_error)
+        }
+        _ = shutdown_signal() => {
+            let (tunnel_result, server_result) = tokio::join!(
+                tunnel.shutdown(),
+                stop_http_server(
+                    &mut shutdown_tx,
+                    &mcp_cancellation,
+                    server_task,
+                    HTTP_SERVER_STOP_TIMEOUT,
+                )
+            );
+            server_result?;
+            tunnel_result
+        }
+    }
+}
+
+async fn stop_http_server(
+    sender: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    cancellation: &CancellationToken,
+    mut server_task: HttpServerTask,
+    stop_timeout: Duration,
+) -> anyhow::Result<()> {
+    cancellation.cancel();
+    request_server_shutdown(sender);
+
+    match tokio::time::timeout(stop_timeout, &mut server_task).await {
+        Ok(result) => flatten_server_result(result),
+        Err(_) => {
+            tracing::warn!(
+                "HTTP server did not stop within {} seconds; aborting remaining connections",
+                stop_timeout.as_secs_f64()
+            );
+            server_task.abort();
+            match server_task.await {
+                Err(error) if error.is_cancelled() => Ok(()),
+                result => flatten_server_result(result),
+            }
+        }
+    }
+}
+
+fn request_server_shutdown(sender: &mut Option<tokio::sync::oneshot::Sender<()>>) {
+    if let Some(sender) = sender.take() {
+        let _ = sender.send(());
+    }
+}
+
+fn flatten_server_result(
+    result: Result<Result<(), std::io::Error>, tokio::task::JoinError>,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.into()),
+        Err(error) => Err(anyhow::anyhow!("HTTP server task failed: {error}")),
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(_) => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = terminate => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    ctrl_c.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn http_shutdown_aborts_after_the_grace_period() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut shutdown_tx = Some(shutdown_tx);
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(async move {
+            let _ = shutdown_rx.await;
+            std::future::pending::<Result<(), std::io::Error>>().await
+        });
+
+        stop_http_server(
+            &mut shutdown_tx,
+            &cancellation,
+            task,
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(shutdown_tx.is_none());
+        assert!(cancellation.is_cancelled());
+    }
 }

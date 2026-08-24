@@ -229,7 +229,7 @@ pub struct CommandConfig {
 /// name. Only stdio servers (a `command`) are bridged today; `type: "sse"|"http"`
 /// / `url` entries are recognised and reported as not-yet-supported rather than
 /// failing the whole config.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSpec {
     /// The executable to launch (e.g. `idasql`, `npx`, `python`). Absent for
@@ -240,6 +240,10 @@ pub struct McpServerSpec {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    /// Working directory for the launched stdio server. When absent, the child
+    /// inherits codex-free's process working directory.
+    #[serde(default)]
+    pub cwd: Option<String>,
     /// Skip this server without removing it from the config.
     #[serde(default)]
     pub disabled: bool,
@@ -256,6 +260,10 @@ pub struct McpServerSpec {
     /// some (including ChatGPT) cap how many a connector may expose.
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    /// Upstream tool names removed after applying `tools`, matching Codex's
+    /// `disabled_tools` semantics.
+    #[serde(default)]
+    pub disabled_tools: Option<Vec<String>>,
     /// How the upstream's tools are exposed:
     /// - `"direct"` (default): each upstream tool becomes its own `<server>__<tool>`.
     /// - `"gateway"`: the whole server collapses into ONE dispatcher tool named
@@ -266,6 +274,18 @@ pub struct McpServerSpec {
     pub mode: Option<String>,
 }
 
+/// Configuration for OpenAI's outbound Secure MCP Tunnel runtime.
+#[derive(Debug, Clone)]
+pub struct OpenAiTunnelConfig {
+    pub tunnel_id: String,
+    /// A secret reference accepted by tunnel-client, never a literal API key.
+    pub api_key_ref: String,
+    pub organization_id: Option<String>,
+    /// An explicit full or runtime-only tunnel-client binary. When absent,
+    /// Codex Free installs and verifies its pinned runtime-only build.
+    pub client_path: Option<std::path::PathBuf>,
+}
+
 /// The fully-resolved server configuration handed to every tool.
 ///
 /// `work_dir` and `port` are always concrete. `projectDoc`, `output`, `memory`,
@@ -274,6 +294,7 @@ pub struct McpServerSpec {
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub work_dir: std::path::PathBuf,
+    pub multi_project: bool,
     pub api_key: Option<String>,
     pub port: u16,
     pub allowed_commands: Vec<String>,
@@ -289,6 +310,9 @@ pub struct AppConfig {
     /// "accept any Host", which the original bridge did so it works behind a
     /// tunnel that presents an arbitrary hostname.
     pub allowed_hosts: Vec<String>,
+    /// OpenAI's outbound tunnel, when enabled. The HTTP listener is restricted
+    /// to loopback and its permissive browser CORS layer is disabled in this mode.
+    pub openai_tunnel: Option<OpenAiTunnelConfig>,
     /// Upstream MCP servers to bridge, keyed by name. Their tools are discovered
     /// at startup and re-exposed as `<server>__<tool>`.
     pub mcp_servers: std::collections::HashMap<String, McpServerSpec>,

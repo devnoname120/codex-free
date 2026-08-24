@@ -6,6 +6,7 @@
 //! as the default, so the default path matches — only `tty: true` is unsupported.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -15,6 +16,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{Mutex as TokioMutex, Notify};
 
+use crate::process_env::scrub_untrusted_child_env;
+use crate::project_bindings::{ProjectBindingScope, ProjectRootSelection, resolve_project_root};
 use crate::types::{AppConfig, PlanState};
 
 // Codex constants (shell_spec.rs). Kept as code, not config, because they are
@@ -213,12 +216,16 @@ impl ExecSession {
     }
 }
 
-/// Per-MCP-session mutable state. A fresh instance is created for every MCP
-/// session so concurrent clients never share exec sessions or plans.
+/// Per-MCP-transport mutable state. A fresh instance is created for every MCP
+/// transport session so concurrent transports never share exec sessions or
+/// in-memory plans.
+/// Project-root state here is the fallback for clients without a durable
+/// conversation identifier.
 pub struct SessionState {
     pub exec_sessions: StdMutex<HashMap<u64, Arc<ExecSession>>>,
     next_exec_id: AtomicU64,
     pub plan: StdMutex<Option<PlanState>>,
+    project_root: StdMutex<Option<PathBuf>>,
 }
 
 impl Default for SessionState {
@@ -227,6 +234,7 @@ impl Default for SessionState {
             exec_sessions: StdMutex::new(HashMap::new()),
             next_exec_id: AtomicU64::new(1),
             plan: StdMutex::new(None),
+            project_root: StdMutex::new(None),
         }
     }
 }
@@ -234,6 +242,66 @@ impl Default for SessionState {
 impl SessionState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn effective_config(&self, config: &AppConfig) -> Result<AppConfig, String> {
+        if !config.multi_project {
+            return Ok(config.clone());
+        }
+
+        let Some(project_root) = self.project_root.lock().unwrap().clone() else {
+            return Err(format!(
+                "No project root is selected for this MCP transport session. Call `set_project_root` with a directory relative to the access root `{}`, then call `get_agent_brief` before using project tools.",
+                config.work_dir.display()
+            ));
+        };
+
+        let mut effective = config.clone();
+        effective.work_dir = project_root;
+        Ok(effective)
+    }
+
+    pub fn select_project_root(
+        &self,
+        config: &AppConfig,
+        input: &str,
+    ) -> Result<ProjectRootSelection, String> {
+        if !config.multi_project {
+            return Err(
+                "Project-root selection is disabled. Start codex-free with `--multi-project` or set `multiProject` to true."
+                    .to_string(),
+            );
+        }
+
+        let (access_root, project_root) = resolve_project_root(config, input)?;
+
+        let mut selected = self.project_root.lock().unwrap();
+        match selected.as_ref() {
+            Some(current) if current == &project_root => Ok(ProjectRootSelection {
+                access_root,
+                project_root,
+                newly_selected: false,
+                scope: ProjectBindingScope::McpTransportSession,
+            }),
+            Some(current) => Err(format!(
+                "This MCP transport session is already bound to project root `{}` and cannot switch to `{}`. Open a new session for another project.",
+                current.display(),
+                project_root.display()
+            )),
+            None => {
+                *selected = Some(project_root.clone());
+                Ok(ProjectRootSelection {
+                    access_root,
+                    project_root,
+                    newly_selected: true,
+                    scope: ProjectBindingScope::McpTransportSession,
+                })
+            }
+        }
+    }
+
+    pub fn selected_project_root(&self) -> Option<PathBuf> {
+        self.project_root.lock().unwrap().clone()
     }
 }
 
@@ -296,6 +364,7 @@ pub fn start_exec_session(
     {
         command.process_group(0);
     }
+    scrub_untrusted_child_env(&mut command, config);
 
     let mut child = command
         .spawn()

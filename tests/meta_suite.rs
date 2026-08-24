@@ -17,7 +17,7 @@ use tempfile::TempDir;
 
 use codex_free::config::default_config;
 use codex_free::exec_sessions::SessionState;
-use codex_free::registry::load_tools;
+use codex_free::registry::{load_tools, load_tools_for_mode};
 use codex_free::safe_path::resolve_safe_path;
 use codex_free::tool::Tool;
 use codex_free::types::{AppConfig, ToolContent, ToolResult};
@@ -28,6 +28,13 @@ use codex_free::types::{AppConfig, ToolContent, ToolResult};
 fn loads_all_25_tools() {
     let tools = load_tools();
     assert_eq!(tools.len(), 25);
+}
+
+#[test]
+fn multi_project_mode_adds_only_the_session_selector() {
+    let tools = load_tools_for_mode(true);
+    assert_eq!(tools.len(), 26);
+    assert_eq!(tools[0].name(), "set_project_root");
 }
 
 #[test]

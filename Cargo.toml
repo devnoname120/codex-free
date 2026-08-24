@@ -1,6 +1,6 @@
 [package]
 name = "codex-free"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 description = "Codex Free MCP bridge, ported to Rust: a local Streamable-HTTP MCP server exposing Codex-style agent tools over a chosen work directory."
 license = "MIT"
@@ -32,12 +32,16 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1.92"
+toml = "1.1.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile = "3"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+getrandom = "0.2"
+tokio-util = "0.7"
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-tempfile = "3"
 
 # `thin` LTO keeps nearly all of full-LTO's runtime benefit for an I/O-bound
 # MCP server while cutting release build time roughly in half; the default

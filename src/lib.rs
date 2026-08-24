@@ -7,6 +7,7 @@
 pub mod apply_patch;
 pub mod auth;
 pub mod bridge;
+pub mod codex_mcp;
 pub mod config;
 pub mod environment;
 pub mod exec_policy;
@@ -14,7 +15,10 @@ pub mod exec_sessions;
 pub mod ignore_rules;
 pub mod instructions;
 pub mod memory;
+pub mod openai_tunnel;
 pub mod output_budget;
+pub mod process_env;
+pub mod project_bindings;
 pub mod project_doc;
 pub mod registry;
 pub mod safe_path;

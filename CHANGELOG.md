@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-24
+
+### Added
+
+- Automatically import local stdio MCP servers from Codex's user-level
+  `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`), including launch
+  environment, working directory, enablement and tool filters. Explicit
+  `codex.config.json` entries overlay imported fields, and discovery can be
+  disabled with `codexMcp.enabled`.
+- Native OpenAI Secure MCP Tunnel support through the official
+  `tunnel-client-runtime`. Codex Free can supervise the outbound tunnel directly,
+  verify its runtime-only readiness and labeled control-plane polling metric,
+  and stop the runtime with the MCP server.
+- Verified managed installation of a pinned runtime-only tunnel client, with
+  per-platform archive hashes embedded in Codex Free, a local integrity manifest,
+  private permissions, and compatibility checks. An explicit official client
+  binary can be selected instead.
+- `openaiTunnel` configuration and matching CLI flags for tunnel ID, runtime
+  key reference, client path, and organization ID.
+- **Persistent per-conversation project-root selection.** Start with
+  `--multi-project` (or `multiProject: true`) to make `--work-dir` an access root.
+  ChatGPT conversations bind once with `set_project_root`; the binding is keyed
+  from `_meta["openai/session"]`, stored under `~/.codex-free/` without persisting
+  the raw identifier, and restored across MCP reconnects and server restarts.
+  Project tools, command working directories, git operations, `AGENTS.md`, repo
+  skills, plans, and notes then use that conversation's independently selected
+  root. Clients without ChatGPT conversation metadata retain the transport-session
+  fallback. Canonical containment checks reject traversal and symlink escapes,
+  and project-aware tools remain unavailable until selection.
+
+### Security
+
+- Native tunnel mode binds the MCP listener to loopback, forces DNS-rebinding
+  Host validation to loopback authorities, disables permissive browser CORS,
+  and authenticates the local MCP hop with a random per-process bearer token.
+- Tunnel runtime keys must be referenced through `env:NAME` or `file:/path`;
+  literal keys are rejected, Unix key files must have private permissions, the
+  resolved key is exposed only to the tunnel child under a synthetic variable,
+  and model-controlled or bridged subprocesses remove the source key variable.
+- The tunnel runtime starts with an allowlisted environment rather than
+  inheriting ambient tunnel-client configuration, proxy, header, or trust-store
+  overrides. HTTP and tunnel shutdown paths are coupled and time-bounded.
+
 ## [1.0.1] - 2026-08-24
 
 ### Changed
@@ -61,5 +104,6 @@ filename sort uses byte/Unicode ordering rather than `localeCompare`;
 `write_file` reports UTF-8 byte counts; `exec_command` uses plain pipes, not a
 PTY. See the README's "Notes on the port" for the full list.
 
+[1.1.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.1.0
 [1.0.1]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hypnguyen1209/codex-free/releases/tag/v1.0.0
