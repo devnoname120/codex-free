@@ -4,7 +4,8 @@ A Rust port of the `codex-free` MCP bridge. codex-free is a local [Model Context
 Protocol](https://modelcontextprotocol.io) server that exposes Codex-style agent
 tools over **Streamable HTTP**, scoped either to one configured working directory
 or to a project root selected independently by each ChatGPT conversation, and can
-additionally **aggregate other local MCP servers** and **surface local skills**.
+additionally **aggregate other local MCP servers**, **surface local skills**, and
+materialize ChatGPT-native files inside the active project.
 Clients without ChatGPT conversation metadata use an MCP-transport-session fallback.
 
 This document explains how it is put together and why. For usage, see
@@ -34,7 +35,7 @@ ChatGPT / MCP client
 │        │                                      │
 │        ▼                                      │
 │  registry: Vec<Box<dyn Tool>>                 │
-│    • 25 native tools                          │
+│    • 26 native tools                          │
 │    • + set_project_root in multi-project mode │
 │    • bridged tools  ← upstream MCP servers    │
 │    • gateway tools  ← upstream MCP servers    │
@@ -74,7 +75,8 @@ Three surfaces reach the model:
    conversation identity arrives in request `_meta` on tool calls, after
    initialization.
 3. `tools/list` → `CodexHandler::list_tools` maps the shared tool registry into
-   rmcp `Tool` definitions.
+   rmcp `Tool` definitions, including optional titles, behavioral annotations,
+   and OpenAI file-parameter metadata.
 4. `tools/call` → `CodexHandler::call_tool` reads `openai/session` from rmcp's
    `RequestContext::meta`. rmcp moves wire-level request `_meta` into that context
    before dispatch, so the typed tool parameters are not the authoritative source.
@@ -109,6 +111,9 @@ trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> String;
     fn describe(&self, cfg: &AppConfig) -> String;      // config-aware override
+    fn title(&self) -> Option<String>;                  // host-facing title
+    fn annotations(&self) -> Option<ToolAnnotations>;  // MCP behavior hints
+    fn meta(&self) -> Option<MetaObject>;               // protocol extensions
     fn input_schema(&self) -> Value;
     fn output_schema(&self) -> Option<Value>;
     fn fills_structured_content(&self) -> bool;         // opt out of default-fill
@@ -144,7 +149,7 @@ The fully-resolved config handed to every tool. `config.rs` parses
 `codex.config.json` with camelCase field names for backward compatibility, imports
 user-level Codex MCP definitions through `codex_mcp.rs`, then applies explicit
 `mcpServers` entries as field overlays. Optional sub-configs (`projectDoc`,
-`output`, `memory`, `skills`, `ignore`) fall back to per-module defaults. In
+`output`, `artifactIngress`, `memory`, `skills`, `ignore`) fall back to per-module defaults. In
 multi-project mode, dispatch clones this config per call and substitutes the
 conversation's selected root—or the transport fallback—for `work_dir`; the static
 server policy and bridge configuration remain shared.
@@ -168,6 +173,9 @@ server policy and bridge configuration remain shared.
   and the tool registry are shared (`Arc`) across transports.
 - **`get_info`** advertises server name `codex-free` (wire-compatible identity),
   version, `tools` capability, and the `instructions`.
+- **Tool descriptors** preserve generic titles, MCP annotations and `_meta`
+  extensions. `import_host_file` uses this path for
+  `_meta["openai/fileParams"]`; the server has no tool-name special case.
 - **Errors**: a tool that fails returns `Ok(CallToolResult::error(...))`
   (`isError: true`) so the caller sees the message; only an unknown tool name is
   an error *result* as well. Protocol errors are avoided.
@@ -208,11 +216,11 @@ a private per-run temporary directory and are removed after shutdown.
 
 ---
 
-## 5. Native tools (25 default, 26 multi-project)
+## 5. Native tools (26 default, 27 multi-project)
 
 | Group | Tools |
 |-------|-------|
-| File / code | `read_file`, `write_file`, `apply_patch`, `glob`, `grep`, `list_directory`, `tree`, `view_image` |
+| File / code | `read_file`, `write_file`, `import_host_file`, `apply_patch`, `glob`, `grep`, `list_directory`, `tree`, `view_image` |
 | Commands | `run_command` (allowlisted argv), `exec_command` / `write_stdin` (resident shell sessions) |
 | Git | `git_status`, `git_push`, `git_commit`, `git_log` |
 | Environment / project | `get_environment`, `get_project_doc`, `get_agent_brief` |
@@ -221,7 +229,8 @@ a private per-run temporary directory and are removed after shutdown.
 | Timing | `clock_curr_time`, `clock_sleep` |
 
 Multi-project mode prepends `set_project_root`. It is omitted entirely in the
-default registry, preserving the original 25-tool surface and behaviour. Clocks
+default registry. `artifactIngress.enabled = false` independently removes
+`import_host_file`, reducing either count by one. Clocks
 and bridged/gateway tools are project-independent; every other native tool is
 blocked until a conversation binding or transport fallback is available.
 
@@ -235,6 +244,8 @@ the original order and rejects duplicate names.
 | Module | Responsibility |
 |--------|----------------|
 | `safe_path.rs` | Lexical path-traversal guard (no `canonicalize`; component-wise containment). The security boundary for every filesystem tool. |
+| `artifact_ingress/` | OpenAI native-file validation and streaming plus capability-confined, atomic no-overwrite workspace publication. It never accepts an arbitrary URL or local source path. |
+| `logging.rs` | Tracing initialization plus a non-overridable filter that suppresses RMCP framework events, preventing native-file bearer URLs from appearing in logs before tool dispatch or malformed-session errors. |
 | `output_budget.rs` | Line/byte windowing and list caps, each cut announced with the continuation argument. |
 | `ignore_rules.rs` | One `.gitignore`-accurate matcher (the `ignore` crate) shared by glob/grep/tree/list_directory. |
 | `exec_policy.rs` | Shell-string allowlist guard for `exec_command` (a guardrail, not a sandbox). |
@@ -361,6 +372,9 @@ startup banner prints the exact file with `Config:`). All fields optional.
               "defaultShell": "…" },
   "ignore": { "useGitignore": true, "useDefaultPatterns": true, "customPatterns": [] },
   "output": { "maxFileLines": 1000, "maxFileBytes": 131072, "maxEntries": 500, "maxTreeNodes": 1000 },
+  "artifactIngress": { "enabled": true, "maxFileBytes": 104857600,
+                       "requestTimeoutMs": 120000, "idleTimeoutMs": 30000,
+                       "maxRedirects": 3, "maxConcurrentDownloads": 2 },
   "projectDoc": { "maxBytes": 32768, "fallbackFilenames": [], "rootMarkers": [".git"] },
   "memory": { "enabled": true, "dir": "…", "maxBytes": 16384 },
   "skills": { "enabled": true, "dirs": ["…"], "includePlugins": true },
@@ -386,7 +400,7 @@ The banner is designed so failures are never silent:
 
 ```
 Config: D:\codex-bridge\codex.config.json          ← which file actually loaded
-Tools loaded (26): 25 native + 1 bridged from upstream MCP servers
+Tools loaded (27): 26 native + 1 bridged from upstream MCP servers
 Upstream MCP servers:
   remote-exec -> gateway (84 functions via `remote_exec`)
 Auth: disabled (no --api-key)
@@ -401,7 +415,7 @@ Auth: disabled (no --api-key)
   internal bearer are never printed.
 - Multi-project startup also prints `Project access root:`, `Project mode:
   persistent ChatGPT conversation binding`, and the conversation-binding state
-  directory; its native count is 26 because the selector is present.
+  directory; its native count is 27 because the selector is present.
 
 ---
 
@@ -425,7 +439,7 @@ units to match the TS `text.length` / `text.slice`.
 
 ## 12. Testing
 
-- **381 tests** — unit tests inside modules plus integration tests under `tests/`
+- **430 tests** — unit tests inside modules plus integration tests under `tests/`
   (`tempfile`-isolated), ported from the TS Bun suite.
 - Memory / skills tests pin `memory.dir` / `skills.dirs` to temp dirs so they never
   touch the real home; plugin discovery is suppressed when `skills.dirs` is set.
@@ -433,6 +447,10 @@ units to match the TS `text.length` / `text.slice`.
   bindings, concurrent session isolation, traversal and symlink escapes,
   project-keyed persistent state, deferred project instructions, and CLI/config
   activation.
+- `artifact_ingress` unit tests use scripted response bodies and capability-rooted
+  temporary directories to cover provider-host validation, redirects, declared
+  and streamed size limits, idle and caller cancellation, exact hashes, partial
+  cleanup, symlink escapes, no-overwrite publication, and concurrent writers.
 - `tests/review_fixes.rs` locks the behavioral-fidelity fixes found by the
   adversarial review of the port. The bridge/gateway/skills code was reviewed the
   same way; the confirmed low-severity findings (name-collision dedup, YAML-safe
@@ -451,8 +469,10 @@ Run: `cargo test`. Build a standalone binary: `cargo build --release`.
 |---------|-------------|
 | Bridged tools don't appear; banner shows `-> FAILED` | The `command` path isn't a runnable stdio binary **on the machine where codex-free runs**. Fix the path or run the server locally. |
 | Banner shows a server you didn't configure (e.g. `idasql -> disabled`) | codex-free loaded a *different* `codex.config.json` than you edited. Check the `Config:` line and edit that file, or pass `--config`. |
-| codex-free exposes the tools (`Tools loaded (109)`) but the client shows only 25 | The client caches the tool manifest — **remove and re-add the connector** so it re-fetches `tools/list`. There is no tool-count cap at 109 (the hard API cap is 128). |
+| codex-free exposes a newer tool set but the client still shows the old one | The client caches the tool manifest — **remove and re-add the connector** so it re-fetches `tools/list`. |
 | A client won't surface a large bridged set at all | Use `"mode": "gateway"` to collapse the server into one tool + a skill, or `"tools": [...]` to expose a curated few. |
 | Upstream `type: "sse"`/`"http"` | Not bridged yet (stdio only); reported as unsupported instead of breaking the config. |
 | Native tunnel never becomes ready | Check the banner's loopback `/readyz` and `/metrics` URLs and the redacted startup error. Codex Free requires runtime readiness plus one successful control-plane poll; the runtime key needs the applicable Tunnels **Read** + **Use** permissions. The runtime-only binary has no `/ui` or `/api/status` surface. |
 | Native tunnel key is rejected before startup | `apiKeyRef` must be `env:NAME` or `file:/path`. The referenced value must exist; on Unix, key files must not grant group/other access. |
+| `import_host_file` is missing | `artifactIngress.enabled` is false, or the connector cached an older manifest. Enable it and remove/re-add the connector so ChatGPT refreshes `tools/list`. |
+| Native file import reports an untrusted URL | The supplied value was not a ChatGPT-native file parameter or its temporary provider URL no longer matches the supported OpenAI file-service boundary. Reattach or regenerate the file instead of passing a URL manually. |

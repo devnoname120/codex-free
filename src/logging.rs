@@ -1,0 +1,36 @@
+use tracing::{Level, Metadata};
+use tracing_subscriber::filter::{FilterExt, filter_fn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
+
+pub fn init_tracing() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let payload_guard = filter_fn(framework_metadata_allowed);
+    let layer = tracing_subscriber::fmt::layer().with_filter(env_filter.and(payload_guard));
+
+    tracing_subscriber::registry().with(layer).init();
+}
+
+fn framework_metadata_allowed(metadata: &Metadata<'_>) -> bool {
+    framework_event_allowed(metadata.target(), metadata.level())
+}
+
+pub fn framework_event_allowed(target: &str, _level: &Level) -> bool {
+    !target.starts_with("rmcp")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rmcp_protocol_events_cannot_be_enabled_by_rust_log() {
+        assert!(!framework_event_allowed("rmcp::service", &Level::ERROR));
+        assert!(!framework_event_allowed("rmcp::service", &Level::WARN));
+        assert!(!framework_event_allowed("rmcp::service", &Level::INFO));
+        assert!(!framework_event_allowed("rmcp::service", &Level::DEBUG));
+        assert!(!framework_event_allowed("rmcp::transport", &Level::TRACE));
+        assert!(framework_event_allowed("codex_free::server", &Level::DEBUG));
+    }
+}

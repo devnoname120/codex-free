@@ -13,8 +13,9 @@ use std::collections::HashMap;
 
 use crate::codex_mcp::{codex_config_path, discover_codex_mcp_servers};
 use crate::types::{
-    AppConfig, CommandConfig, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec, MemoryConfig,
-    OpenAiTunnelConfig, OutputConfig, ProjectDocConfig, SkillsConfig, TreeConfig,
+    AppConfig, ArtifactIngressConfig, CommandConfig, ExecConfig, ExecMode, IgnoreConfig,
+    McpServerSpec, MemoryConfig, OpenAiTunnelConfig, OutputConfig, ProjectDocConfig, SkillsConfig,
+    TreeConfig,
 };
 
 #[derive(Parser, Debug)]
@@ -249,6 +250,7 @@ struct FileConfig {
     exec: Option<PartialExec>,
     project_doc: Option<ProjectDocConfig>,
     output: Option<OutputConfig>,
+    artifact_ingress: Option<ArtifactIngressConfig>,
     memory: Option<MemoryConfig>,
     skills: Option<SkillsConfig>,
     ignore: Option<IgnoreConfig>,
@@ -335,6 +337,7 @@ pub fn default_config(work_dir: std::path::PathBuf) -> AppConfig {
         exec: default_exec(),
         project_doc: ProjectDocConfig::default(),
         output: OutputConfig::default(),
+        artifact_ingress: ArtifactIngressConfig::default(),
         memory: MemoryConfig::default(),
         skills: SkillsConfig::default(),
         ignore: IgnoreConfig::default(),
@@ -554,6 +557,9 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         );
     }
 
+    let artifact_ingress = file.artifact_ingress.unwrap_or_default();
+    artifact_ingress.validate()?;
+
     Ok(AppConfig {
         work_dir,
         multi_project: cli.multi_project || file.multi_project.unwrap_or(false),
@@ -567,6 +573,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         exec,
         project_doc: file.project_doc.unwrap_or_default(),
         output: file.output.unwrap_or_default(),
+        artifact_ingress,
         memory: file.memory.unwrap_or_default(),
         skills: file.skills.unwrap_or_default(),
         ignore: file.ignore.unwrap_or_default(),
@@ -680,6 +687,67 @@ mod tests {
             Some(&["write".to_string()][..])
         );
         assert!(demo.command.is_none());
+    }
+
+    #[test]
+    fn artifact_ingress_config_accepts_defaults_and_camel_case_overrides() {
+        let empty: FileConfig = serde_json::from_str(r#"{"artifactIngress":{}}"#).unwrap();
+        let empty = empty.artifact_ingress.unwrap();
+        assert!(empty.enabled);
+        assert_eq!(
+            empty.max_file_bytes,
+            crate::types::DEFAULT_ARTIFACT_MAX_FILE_BYTES
+        );
+
+        let configured: FileConfig = serde_json::from_str(
+            r#"{
+                "artifactIngress": {
+                    "enabled": false,
+                    "maxFileBytes": 4096,
+                    "requestTimeoutMs": 5000,
+                    "idleTimeoutMs": 1000,
+                    "maxRedirects": 1,
+                    "maxConcurrentDownloads": 4
+                }
+            }"#,
+        )
+        .unwrap();
+        let configured = configured.artifact_ingress.unwrap();
+        assert!(!configured.enabled);
+        assert_eq!(configured.max_file_bytes, 4096);
+        assert_eq!(configured.request_timeout_ms, 5000);
+        assert_eq!(configured.idle_timeout_ms, 1000);
+        assert_eq!(configured.max_redirects, 1);
+        assert_eq!(configured.max_concurrent_downloads, 4);
+    }
+
+    #[test]
+    fn artifact_ingress_config_rejects_unsafe_limits() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("config.json");
+        for (json, expected) in [
+            (
+                r#"{"artifactIngress":{"maxFileBytes":0}}"#,
+                "maxFileBytes must be positive",
+            ),
+            (
+                r#"{"artifactIngress":{"requestTimeoutMs":0}}"#,
+                "requestTimeoutMs must be positive",
+            ),
+            (
+                r#"{"artifactIngress":{"requestTimeoutMs":100,"idleTimeoutMs":101}}"#,
+                "idleTimeoutMs",
+            ),
+            (r#"{"artifactIngress":{"maxRedirects":11}}"#, "maxRedirects"),
+            (
+                r#"{"artifactIngress":{"maxConcurrentDownloads":0}}"#,
+                "maxConcurrentDownloads",
+            ),
+        ] {
+            std::fs::write(&config_path, json).unwrap();
+            let error = load_config(cli(root.path(), &config_path)).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

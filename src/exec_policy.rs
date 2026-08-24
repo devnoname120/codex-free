@@ -237,8 +237,8 @@ pub fn assert_exec_allowed(cmd: &str, config: &AppConfig) -> Result<(), ExecPoli
 mod tests {
     use super::*;
     use crate::types::{
-        CommandConfig, ExecConfig, IgnoreConfig, MemoryConfig, OutputConfig, ProjectDocConfig,
-        SkillsConfig, TreeConfig,
+        ArtifactIngressConfig, CommandConfig, ExecConfig, IgnoreConfig, MemoryConfig, OutputConfig,
+        ProjectDocConfig, SkillsConfig, TreeConfig,
     };
 
     fn cfg(mode: ExecMode) -> AppConfig {
@@ -265,6 +265,7 @@ mod tests {
             },
             project_doc: ProjectDocConfig::default(),
             output: OutputConfig::default(),
+            artifact_ingress: ArtifactIngressConfig::default(),
             memory: MemoryConfig::default(),
             skills: SkillsConfig::default(),
             ignore: IgnoreConfig::default(),
