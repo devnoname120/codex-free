@@ -3,7 +3,7 @@
 
 # Local build artifacts
 *.exe
-/codexrr
+/codex-free
 /codex-free
 
 # Leftovers from the previous Bun/TypeScript build

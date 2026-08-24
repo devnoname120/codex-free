@@ -10,17 +10,17 @@ use std::collections::BTreeMap;
 use serde_json::json;
 use tempfile::TempDir;
 
-use codexrr::config::default_config;
-use codexrr::exec_sessions::SessionState;
-use codexrr::memory::{
+use codex_free::config::default_config;
+use codex_free::exec_sessions::SessionState;
+use codex_free::memory::{
     DEFAULT_MEMORY_MAX_BYTES, MemoryNote, load_memory, lock_path, memory_dir, memory_enabled,
     memory_max_bytes, memory_path, notes_bytes, remember, render_memory, save_plan,
 };
-use codexrr::tool::Tool;
-use codexrr::tools::recall::{NOTHING_REMEMBERED, Recall};
-use codexrr::tools::remember::Remember;
-use codexrr::tools::update_plan::UpdatePlan;
-use codexrr::types::{AppConfig, PlanItem, PlanState, PlanStepStatus};
+use codex_free::tool::Tool;
+use codex_free::tools::recall::{NOTHING_REMEMBERED, Recall};
+use codex_free::tools::remember::Remember;
+use codex_free::tools::update_plan::UpdatePlan;
+use codex_free::types::{AppConfig, PlanItem, PlanState, PlanStepStatus};
 
 const NOW: &str = "2026-01-01T00:00:00.000Z";
 

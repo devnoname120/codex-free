@@ -61,7 +61,7 @@ fn to_call_tool_result(result: ToolResult) -> CallToolResult {
 impl ServerHandler for CodexHandler {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("codexrr", "1.0.0"))
+            .with_server_info(Implementation::new("codex-free", "1.0.1"))
             .with_instructions(build_instructions(&self.config))
     }
 
@@ -134,7 +134,7 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     // Gateway-mode upstreams write their generated skills here; keyed by port so
     // concurrent instances don't clobber each other, and rebuilt fresh per start.
     let gen_dir = std::env::temp_dir()
-        .join("codexrr-gateway-skills")
+        .join("codex-free-gateway-skills")
         .join(config.port.to_string());
     let _ = std::fs::remove_dir_all(&gen_dir);
     config.generated_skills_dir = Some(gen_dir);

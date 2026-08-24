@@ -33,6 +33,7 @@ jobs:
 
   build:
     needs: check
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +51,10 @@ jobs:
             cross_linker: aarch64-linux-gnu-gcc
             apt_packages: gcc-aarch64-linux-gnu
           - name: darwin-x64
-            os: macos-13
+            # Cross-compile the Intel binary on Apple-Silicon runners: the
+            # macos-13 (Intel) pool has a long queue and was stalling releases.
+            # macos-14's toolchain targets x86_64 fine and starts quickly.
+            os: macos-14
             target: x86_64-apple-darwin
             ext: ""
             archive: tar.gz
@@ -93,9 +97,9 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          STAGE="codexrr-${VERSION}-${{ matrix.name }}"
+          STAGE="codex-free-${VERSION}-${{ matrix.name }}"
           mkdir "${STAGE}"
-          cp "target/${{ matrix.target }}/release/codexrr${{ matrix.ext }}" "${STAGE}/"
+          cp "target/${{ matrix.target }}/release/codex-free${{ matrix.ext }}" "${STAGE}/"
           cp codex.config.json LICENSE README.md "${STAGE}/"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "STAGE=${STAGE}" >> "$GITHUB_ENV"
@@ -116,7 +120,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: codexrr-${{ matrix.name }}
+          name: codex-free-${{ matrix.name }}
           path: ${{ env.ARCHIVE }}
 
   release:

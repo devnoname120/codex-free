@@ -2,13 +2,13 @@
 
 *Codex Free, rewritten in Rust (but you still have to buy ChatGPT Plus)*
 
-A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Codexrr is a faithful Rust port of the original Bun + TypeScript `codex-free`, built on **tokio + axum** and the official [`rmcp`](https://crates.io/crates/rmcp) SDK over Streamable HTTP.
+A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Codex Free is a faithful Rust port of the original Bun + TypeScript `codex-free`, built on **tokio + axum** and the official [`rmcp`](https://crates.io/crates/rmcp) SDK over Streamable HTTP.
 
 ChatGPT talks to a public tunnel URL, which forwards to this server running on your machine, which operates on a project directory you choose.
 
 The tool set covers the ones [Codex](https://github.com/openai/codex) gives its own agent — `apply_patch`, `exec_command`/`write_stdin`, `view_image`, `update_plan`, `clock_curr_time`/`clock_sleep` — so ChatGPT Web can work the way Codex does: patch files in place instead of rewriting them, drive interactive and long-running processes, and keep a plan across a task. It carries the project's `AGENTS.md` and Codex's own agent brief, so the client is told how to behave and not just what it can call. It bounds what a tool call can return and keeps a plan and notes on disk across conversations, addressing the one thing Codex never had to solve — a context window far smaller than the task. And it loads Codex's skills: a `SKILL.md` in the repo or your home directory teaches the client how *you* do a recurring task, and only the ones that apply are ever read. Schemas and prompt are ported from the Codex source, not reimplemented from guesswork.
 
-Beyond the port, Codexrr can **aggregate other MCP servers** — connecting to your local stdio MCP servers and re-exposing their tools through its own endpoint, so the ChatGPT-side agent can call them too.
+Beyond the port, Codex Free can **aggregate other MCP servers** — connecting to your local stdio MCP servers and re-exposing their tools through its own endpoint, so the ChatGPT-side agent can call them too.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ Beyond the port, Codexrr can **aggregate other MCP servers** — connecting to y
 flowchart LR
     ChatGPT["ChatGPT Web Pro"]
     Tunnel["Public Tunnel\n(ngrok / cloudflared)"]
-    Server["Codexrr\nMCP Bridge\n:3000"]
+    Server["Codex Free\nMCP Bridge\n:3000"]
     Tools["Tool Registry"]
 
     FS["read_file\nwrite_file\nlist_directory\ntree"]
@@ -75,12 +75,12 @@ To build a standalone binary:
 
 ```bash
 cargo build --release
-./target/release/codexrr --work-dir /path/to/your/project
+./target/release/codex-free --work-dir /path/to/your/project
 ```
 
 ### Prebuilt binaries
 
-Each release ships a compiled binary per platform — `windows-x64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. Download the archive for your OS/arch, unpack it, and run `codexrr --work-dir …`. These are native builds, so there is no AVX2/baseline caveat: the binary runs on any CPU of its architecture.
+Each release ships a compiled binary per platform — `windows-x64`, `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. Download the archive for your OS/arch, unpack it, and run `codex-free --work-dir …`. These are native builds, so there is no AVX2/baseline caveat: the binary runs on any CPU of its architecture.
 
 ## CLI flags
 
@@ -263,7 +263,7 @@ The `allowedHosts` array and the `mcpServers` map are covered under [Host allowl
 
 ## Context and memory
 
-Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. Codexrr attacks both halves of that.
+Codex runs against a large context window and keeps its session in a process you control. ChatGPT Web does neither: the window is smaller than most real tasks, and when it fills — or when you open a new chat — the plan and everything learned along the way are gone, with no sign to the model that they ever existed. Codex Free attacks both halves of that.
 
 **Spend the window on less.** Every tool that could return an unbounded amount of text stops at a budget and says so on its last line, naming the argument that continues from where it stopped:
 
@@ -344,7 +344,7 @@ Instructions are built per MCP session, so editing `AGENTS.md` takes effect on t
 
 ## Skills
 
-`AGENTS.md` says what is true of the project always. A **skill** says how to do one recurring task well — cut a release, review a PR the way this team reviews PRs, debug the flaky suite — and is only read when that task comes up. Codex has had them since its extension crate landed; Codexrr ports the format and the discovery, from `codex-rs/ext/skills` and `codex-rs/skills`.
+`AGENTS.md` says what is true of the project always. A **skill** says how to do one recurring task well — cut a release, review a PR the way this team reviews PRs, debug the flaky suite — and is only read when that task comes up. Codex has had them since its extension crate landed; Codex Free ports the format and the discovery, from `codex-rs/ext/skills` and `codex-rs/skills`.
 
 A skill is a directory holding a `SKILL.md` whose YAML frontmatter names it and says when it applies:
 
@@ -379,7 +379,7 @@ description: Cut and publish a release of this project
 
 Repo skills come first, so a project decides how a name behaves inside it; a personal skill of the same name is shadowed and `skills_list` says so rather than merging the two.
 
-**Claude Code plugins.** Codexrr also discovers skills bundled with your installed Claude Code plugins, namespaced `<plugin>:<skill>` (e.g. `idasql:decompiler`) so they never collide with your own. The highest installed version of each plugin is used. Turn this off with `"skills": { "includePlugins": false }`. Setting `skills.dirs` overrides the standalone roots and, by default, disables plugin discovery too — set `includePlugins: true` alongside `dirs` to keep it.
+**Claude Code plugins.** Codex Free also discovers skills bundled with your installed Claude Code plugins, namespaced `<plugin>:<skill>` (e.g. `idasql:decompiler`) so they never collide with your own. The highest installed version of each plugin is used. Turn this off with `"skills": { "includePlugins": false }`. Setting `skills.dirs` overrides the standalone roots and, by default, disables plugin discovery too — set `includePlugins: true` alongside `dirs` to keep it.
 
 **What the model sees.** The catalogue — a name and a description per skill — goes into `instructions` under a `## Skills` heading, so a chat opens knowing what is available without spending a call to find out. Bodies are not loaded: `skills_read` fetches one only once a skill has actually been chosen. That is the progressive disclosure that makes a large library affordable on a small context window. The section is omitted entirely when nothing is installed.
 
@@ -389,9 +389,9 @@ Discovery runs per MCP session, so adding a skill takes effect on the next conne
 
 ## Bridging other MCP servers
 
-Codexrr can also act as an **MCP aggregator**: it connects to your other local MCP servers as a client, discovers their tools at startup, and re-exposes them through its own `/mcp` endpoint — so the ChatGPT-side agent sees and can call them too.
+Codex Free can also act as an **MCP aggregator**: it connects to your other local MCP servers as a client, discovers their tools at startup, and re-exposes them through its own `/mcp` endpoint — so the ChatGPT-side agent sees and can call them too.
 
-Add an `mcpServers` section to `codex.config.json` (the standard Claude-Desktop shape). Each entry is a stdio command that Codexrr launches and drives over stdin/stdout:
+Add an `mcpServers` section to `codex.config.json` (the standard Claude-Desktop shape). Each entry is a stdio command that Codex Free launches and drives over stdin/stdout:
 
 ```json
 {
@@ -492,7 +492,7 @@ Don't expose this without tunnel-level access control (ngrok IP restrictions, Cl
 
 ```bash
 cargo run -- --work-dir /path/to/project   # run against a project
-cargo build --release                       # optimized binary at target/release/codexrr
+cargo build --release                       # optimized binary at target/release/codex-free
 cargo test                                  # run the test suite
 cargo clippy --all-targets                  # lints
 cargo fmt                                    # format
