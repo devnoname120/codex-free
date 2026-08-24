@@ -826,17 +826,17 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair
             == [
                 "--control-plane.api-key",
-                "env:CODEXRR_OPENAI_TUNNEL_API_KEY"
+                "env:CODEX_FREE_OPENAI_TUNNEL_API_KEY"
             ]));
         assert!(args.windows(2).any(|pair| pair
             == [
                 "--mcp.extra-headers",
-                "Authorization: env:CODEXRR_INTERNAL_MCP_AUTHORIZATION"
+                "Authorization: env:CODEX_FREE_INTERNAL_MCP_AUTHORIZATION"
             ]));
         assert!(args.windows(2).any(|pair| pair
             == [
                 "--mcp.discovery-extra-headers",
-                "Authorization: env:CODEXRR_INTERNAL_MCP_AUTHORIZATION"
+                "Authorization: env:CODEX_FREE_INTERNAL_MCP_AUTHORIZATION"
             ]));
         assert!(
             args.windows(2)
