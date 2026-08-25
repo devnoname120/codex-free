@@ -1204,6 +1204,7 @@ mod tests {
         *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
             source_project_root: source,
             project_root: outside.path().to_path_buf(),
+            repository_url: None,
             managed_worktree: false,
             worktree_git_root: None,
             worktrees_root: None,
@@ -1226,6 +1227,7 @@ mod tests {
         *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
             source_project_root: source,
             project_root: outside.path().to_path_buf(),
+            repository_url: None,
             managed_worktree: true,
             worktree_git_root: Some(outside.path().to_path_buf()),
             worktrees_root: Some(worktrees.path().to_path_buf()),
@@ -1253,6 +1255,7 @@ mod tests {
         *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
             source_project_root: source,
             project_root: outside.path().to_path_buf(),
+            repository_url: None,
             managed_worktree: true,
             worktree_git_root: Some(worktree_git_root),
             worktrees_root: Some(worktrees.path().to_path_buf()),
