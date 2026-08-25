@@ -431,6 +431,45 @@ impl Default for CodexProjectCatalogConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+#[derive(Default)]
+pub enum WorktreeMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl WorktreeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[derive(Default)]
+pub enum WorktreeUpstreamRefreshMode {
+    #[default]
+    Never,
+    BestEffort,
+}
+
+impl WorktreeUpstreamRefreshMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::BestEffort => "best-effort",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AuditConfig {
     pub log_file: Option<std::path::PathBuf>,
@@ -464,6 +503,24 @@ pub struct ProjectCatalogConfig {
     pub entries: Vec<ProjectCatalogEntryConfig>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorktreeConfig {
+    pub mode: WorktreeMode,
+    pub root: std::path::PathBuf,
+    pub upstream_refresh_mode: WorktreeUpstreamRefreshMode,
+    pub auto_cleanup_enabled: bool,
+    pub keep_count: usize,
+    /// Whether a per-worktree setup script (declared through the bound
+    /// environment's `environment.toml`) may be executed when a managed
+    /// worktree is created. This runs an arbitrary command *outside* the
+    /// `allowedCommands`/exec policy, and the environment path is itself
+    /// selectable through local git config, so an untrusted repository could
+    /// otherwise plant a script that runs on the next binding. It is therefore
+    /// opt-in and defaults to `false`; leave it off unless every project that
+    /// can reach this server is trusted to run arbitrary setup commands.
+    pub allow_setup_script: bool,
+}
+
 /// The fully-resolved server configuration handed to every tool.
 ///
 /// `work_dir` and `port` are always concrete. `project_catalog`, `projectDoc`,
@@ -474,6 +531,7 @@ pub struct AppConfig {
     pub work_dir: std::path::PathBuf,
     pub multi_project: bool,
     pub project_catalog: ProjectCatalogConfig,
+    pub worktrees: WorktreeConfig,
     pub api_key: Option<String>,
     pub port: u16,
     pub allowed_commands: Vec<String>,
