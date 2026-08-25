@@ -6,6 +6,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- Per-worktree Codex environment setup scripts are now opt-in through
+  `worktrees.allowSetupScript` (default `false`). The script runs an arbitrary
+  command outside the `allowedCommands`/exec policy, and both the environment
+  file and its script path are selectable through the source repository's local
+  Git config, so an untrusted project could otherwise plant a script that runs
+  on the next conversation binding. When the flag is off, the environment is
+  neither copied into the worktree nor executed.
+
+### Fixed
+
+- Managed worktrees now work on Windows: the extended-length `\\?\` prefix that
+  `fs::canonicalize` returns is stripped from the worktree root before it is
+  handed to `git worktree add`, which otherwise fails to create the worktree's
+  leading directories.
+
 ## [1.2.0] - 2026-08-24
 
 ### Added
