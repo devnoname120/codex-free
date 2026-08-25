@@ -22,6 +22,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-flight request. Legacy SSE/WebSocket transports, literal Codex
   `bearer_token` values, mixed stdio/HTTP settings, and ambiguous duplicate
   Authorization configuration are rejected explicitly.
+- The upstream Streamable HTTP client's redirect policy is now set to `none` in
+  Codex Free's own code (`build_upstream_client`) rather than inherited from
+  RMCP's default client, so the guarantee that caller-supplied
+  `Authorization`/custom headers are never replayed to a redirect target cannot
+  silently regress under a dependency bump; a regression test asserts it.
+
+### Changed
+
+- Consolidated on a single `reqwest` 0.13 (the version RMCP's Streamable HTTP
+  client transport uses), removing the second `reqwest` 0.12 that was compiled
+  in alongside it. The whole process now shares one TLS stack — rustls with the
+  ring crypto provider — installed once before any HTTP client is built, so
+  there is a single set of trust roots and no aws-lc-rs backend.
 
 ## [1.2.0] - 2026-08-24
 

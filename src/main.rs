@@ -11,6 +11,12 @@ async fn main() {
         )
         .init();
 
+    // We build reqwest with `rustls-no-provider`, so a rustls crypto provider
+    // must be installed process-wide before any HTTP client is built. Every
+    // client factory installs it too, but do it once up front so any client
+    // constructed by a dependency also finds a provider.
+    codex_free::tls::ensure_crypto_provider();
+
     let cli = Cli::parse();
     let config = match load_config(cli) {
         Ok(c) => c,

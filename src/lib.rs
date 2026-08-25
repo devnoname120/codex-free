@@ -24,6 +24,7 @@ pub mod registry;
 pub mod safe_path;
 pub mod server;
 pub mod skills;
+pub mod tls;
 pub mod tool;
 pub mod tools;
 pub mod types;
