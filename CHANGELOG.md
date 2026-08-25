@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-conversation connector authorization through
+  `conversationAuthToken`. Quickstart can generate and persist a high-entropy
+  token, protect the config on Unix, and print a one-line instruction for an
+  individual chat or ChatGPT Project instructions. The conditional `authenticate`
+  tool verifies the token once, then restores the grant from stable ChatGPT
+  conversation metadata across connector reconnects and server restarts; generic
+  MCP clients use transport-session authorization.
+
+### Security
+
+- Conversation authorization blocks every non-authentication tool and withholds
+  the project-aware initialization brief until verification. Durable markers store
+  only a hashed conversation identity and grant, in a namespace derived from the
+  canonical work directory and current token, so token rotation invalidates older
+  grants without copying the token into the cache. Audit command previews also
+  redact the configured conversation token. The token remains plaintext in
+  `codex.config.json` by design and must be kept private and out of version control.
+
 ## [1.4.0] - 2026-08-25
 
 ### Fixed
