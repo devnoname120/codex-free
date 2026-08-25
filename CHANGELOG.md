@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `review.enabled` configuration, defaulting to `true`, to remove `show_changes`
+  and its MCP Apps resource and instructions while also disabling review
+  checkpoint capture.
+
+### Changed
+
+- The `show_changes` MCP App now uses a responsive per-file layout with diffs
+  collapsed and lazily rendered by default. Long lines scroll within the opened
+  file instead of widening the card, and renamed files show both paths.
+- Review statistics and patches now use Git's histogram diff algorithm while
+  retaining explicit rename detection.
+
 ## [1.3.0] - 2026-08-25
 
 ### Added

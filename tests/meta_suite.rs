@@ -51,6 +51,18 @@ fn artifact_ingress_can_be_omitted_by_configuration() {
 }
 
 #[test]
+fn review_tool_can_be_omitted_by_configuration() {
+    let mut config = default_config(PathBuf::from("/tmp"));
+    config.review.enabled = false;
+    let names = load_tools_for_config(&config)
+        .into_iter()
+        .map(|tool| tool.name())
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 26);
+    assert!(!names.contains(&"show_changes"));
+}
+
+#[test]
 fn all_tools_have_unique_names() {
     let tools = load_tools();
     let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();

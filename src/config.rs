@@ -1536,14 +1536,18 @@ mod tests {
     #[test]
     fn review_config_accepts_an_empty_block_and_camel_case_override() {
         let empty: FileConfig = serde_json::from_str(r#"{"review":{}}"#).unwrap();
+        let empty = empty.review.unwrap();
+        assert!(empty.enabled);
         assert_eq!(
-            empty.review.unwrap().max_patch_bytes,
+            empty.max_patch_bytes,
             crate::types::DEFAULT_REVIEW_MAX_PATCH_BYTES
         );
 
         let configured: FileConfig =
-            serde_json::from_str(r#"{"review":{"maxPatchBytes":1234}}"#).unwrap();
-        assert_eq!(configured.review.unwrap().max_patch_bytes, 1234);
+            serde_json::from_str(r#"{"review":{"enabled":false,"maxPatchBytes":1234}}"#).unwrap();
+        let configured = configured.review.unwrap();
+        assert!(!configured.enabled);
+        assert_eq!(configured.max_patch_bytes, 1234);
     }
 
     #[test]

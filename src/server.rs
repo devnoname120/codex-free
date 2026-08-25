@@ -148,19 +148,23 @@ fn advertised_tool(tool: &dyn Tool, config: &AppConfig) -> rmcp::model::Tool {
 
 impl ServerHandler for CodexHandler {
     fn get_info(&self) -> ServerInfo {
-        let mut capabilities = ServerCapabilities::builder()
-            .enable_resources()
-            .enable_tools()
-            .build();
-        let mut extensions = ExtensionCapabilities::new();
-        extensions.insert(
-            review_ui::MCP_APPS_EXTENSION_ID.to_string(),
-            json!({ "mimeTypes": [review_ui::REVIEW_UI_MIME_TYPE] })
-                .as_object()
-                .cloned()
-                .expect("static MCP Apps capability must be an object"),
-        );
-        capabilities.extensions = Some(extensions);
+        let capabilities = ServerCapabilities::builder().enable_tools();
+        let mut capabilities = if self.config.review.enabled {
+            capabilities.enable_resources().build()
+        } else {
+            capabilities.build()
+        };
+        if self.config.review.enabled {
+            let mut extensions = ExtensionCapabilities::new();
+            extensions.insert(
+                review_ui::MCP_APPS_EXTENSION_ID.to_string(),
+                json!({ "mimeTypes": [review_ui::REVIEW_UI_MIME_TYPE] })
+                    .as_object()
+                    .cloned()
+                    .expect("static MCP Apps capability must be an object"),
+            );
+            capabilities.extensions = Some(extensions);
+        }
         InitializeResult::new(capabilities)
             .with_server_info(Implementation::new("codex-free", "1.3.0"))
             .with_instructions(build_initial_instructions(&self.config))
@@ -184,9 +188,14 @@ impl ServerHandler for CodexHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult::with_all_items(vec![
-            review_ui::resource(),
-        ]))
+        let resources = self
+            .config
+            .review
+            .enabled
+            .then(review_ui::resource)
+            .into_iter()
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
     }
 
     async fn read_resource(
@@ -194,7 +203,7 @@ impl ServerHandler for CodexHandler {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        if request.uri != review_ui::REVIEW_UI_URI {
+        if !self.config.review.enabled || request.uri != review_ui::REVIEW_UI_URI {
             return Err(McpError::resource_not_found(
                 format!("Unknown resource: {}", request.uri),
                 None,
@@ -302,7 +311,10 @@ impl ServerHandler for CodexHandler {
                             Some(identity) => ReviewOwner::conversation(identity),
                             None => ReviewOwner::transport(self.session.review_state()),
                         };
-                        if tool.may_modify_project() {
+                        if !effective_config.review.enabled {
+                            tool.call_with_context(args, &effective_config, session, &tool_context)
+                                .await
+                        } else if tool.may_modify_project() {
                             // Fail closed: refuse a mutating tool when the review
                             // checkpoint cannot be captured. The refusal is returned
                             // as a value (not an early return) so the audit
@@ -918,6 +930,35 @@ mod tests {
         assert!(info.capabilities.resources.is_some());
         assert!(
             info.capabilities
+                .extensions
+                .as_ref()
+                .is_some_and(|extensions| {
+                    extensions.contains_key(review_ui::MCP_APPS_EXTENSION_ID)
+                })
+        );
+    }
+
+    #[test]
+    fn hides_review_resources_and_extension_when_review_is_disabled() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = crate::config::default_config(root.path().to_path_buf());
+        config.review.enabled = false;
+        let tools = crate::registry::load_tools_for_config(&config);
+        let handler = CodexHandler {
+            config: Arc::new(config),
+            tools: Arc::new(tools),
+            project_bindings: Arc::new(ProjectBindingStore::new(root.path().join("bindings"))),
+            conversation_exec_sessions: Arc::new(ConversationExecSessionStore::new()),
+            review_checkpoints: Arc::new(ReviewCheckpointManager::new()),
+            audit: None,
+            session: SessionState::new(),
+        };
+
+        let info = handler.get_info();
+        assert!(info.capabilities.resources.is_none());
+        assert!(
+            !info
+                .capabilities
                 .extensions
                 .as_ref()
                 .is_some_and(|extensions| {

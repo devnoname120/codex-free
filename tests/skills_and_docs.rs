@@ -805,6 +805,19 @@ fn build_mentions_native_file_ingress_only_when_the_tool_is_enabled() {
 }
 
 #[test]
+fn build_mentions_show_changes_only_when_review_is_enabled() {
+    let dir = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    let enabled = brief_config(dir.path(), state.path(), "bash");
+    assert!(build_instructions(&enabled).contains("call show_changes once"));
+
+    let mut disabled = enabled;
+    disabled.review.enabled = false;
+    assert!(!build_instructions(&disabled).contains("show_changes"));
+}
+
+#[test]
 fn build_describes_actual_shell() {
     let dir = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();

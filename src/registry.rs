@@ -10,12 +10,13 @@ use crate::tools;
 use crate::types::{AppConfig, DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS};
 
 pub fn load_tools() -> Vec<Box<dyn Tool>> {
-    load_tools_with_options(false, true, DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS)
+    load_tools_with_options(false, true, true, DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS)
 }
 
 pub fn load_tools_for_mode(multi_project: bool) -> Vec<Box<dyn Tool>> {
     load_tools_with_options(
         multi_project,
+        true,
         true,
         DEFAULT_ARTIFACT_MAX_CONCURRENT_DOWNLOADS,
     )
@@ -24,6 +25,7 @@ pub fn load_tools_for_mode(multi_project: bool) -> Vec<Box<dyn Tool>> {
 pub fn load_tools_for_config(config: &AppConfig) -> Vec<Box<dyn Tool>> {
     load_tools_with_options(
         config.multi_project,
+        config.review.enabled,
         config.artifact_ingress.enabled,
         config.artifact_ingress.max_concurrent_downloads,
     )
@@ -31,6 +33,7 @@ pub fn load_tools_for_config(config: &AppConfig) -> Vec<Box<dyn Tool>> {
 
 fn load_tools_with_options(
     multi_project: bool,
+    review_enabled: bool,
     artifact_ingress_enabled: bool,
     max_concurrent_downloads: usize,
 ) -> Vec<Box<dyn Tool>> {
@@ -46,10 +49,12 @@ fn load_tools_with_options(
             max_concurrent_downloads,
         )));
     }
+    all.push(Box::new(tools::run_command::RunCommand));
+    all.push(Box::new(tools::git_status::GitStatus));
+    if review_enabled {
+        all.push(Box::new(tools::show_changes::ShowChanges));
+    }
     all.extend([
-        Box::new(tools::run_command::RunCommand),
-        Box::new(tools::git_status::GitStatus),
-        Box::new(tools::show_changes::ShowChanges),
         Box::new(tools::git_push::GitPush),
         Box::new(tools::git_commit::GitCommit),
         Box::new(tools::git_log::GitLog),
@@ -78,7 +83,7 @@ fn load_tools_with_options(
         // Codex's skills.list / skills.read.
         Box::new(tools::skills_list::SkillsList),
         Box::new(tools::skills_read::SkillsRead),
-    ] as [Box<dyn Tool>; 24]);
+    ] as [Box<dyn Tool>; 21]);
 
     let mut seen = std::collections::HashSet::new();
     for tool in &all {

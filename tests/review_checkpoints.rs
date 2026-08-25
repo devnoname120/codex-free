@@ -379,10 +379,18 @@ async fn captures_renames_deletions_untracked_and_binary_files() {
         .unwrap();
     assert_eq!(result.summary.files, 4);
     assert_eq!(result.summary.binary_files, 1);
-    assert!(result.files.iter().any(|file| file.status == "renamed"));
+    let renamed = result
+        .files
+        .iter()
+        .find(|file| file.status == "renamed")
+        .unwrap();
+    assert_eq!(renamed.previous_path.as_deref(), Some("rename-me.txt"));
+    assert_eq!(renamed.path, "renamed.txt");
     assert!(result.files.iter().any(|file| file.status == "deleted"));
     assert!(result.files.iter().any(|file| file.path == "untracked.txt"));
     assert!(result.files.iter().any(|file| file.binary));
+    assert!(result.patch.contains("rename from rename-me.txt"));
+    assert!(result.patch.contains("rename to renamed.txt"));
     assert!(result.patch.contains("GIT binary patch"));
 }
 

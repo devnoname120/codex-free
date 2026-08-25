@@ -190,14 +190,21 @@ pub struct MemoryConfig {
     pub max_bytes: Option<usize>,
 }
 
+pub const DEFAULT_REVIEW_ENABLED: bool = true;
 pub const DEFAULT_REVIEW_MAX_PATCH_BYTES: usize = 512 * 1024;
 
-/// Bounds review results without changing checkpoint semantics.
+/// Controls review exposure and bounds its result payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewConfig {
+    #[serde(default = "default_review_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_review_max_patch_bytes")]
     pub max_patch_bytes: usize,
+}
+
+fn default_review_enabled() -> bool {
+    DEFAULT_REVIEW_ENABLED
 }
 
 fn default_review_max_patch_bytes() -> usize {
@@ -207,6 +214,7 @@ fn default_review_max_patch_bytes() -> usize {
 impl Default for ReviewConfig {
     fn default() -> Self {
         Self {
+            enabled: DEFAULT_REVIEW_ENABLED,
             max_patch_bytes: DEFAULT_REVIEW_MAX_PATCH_BYTES,
         }
     }

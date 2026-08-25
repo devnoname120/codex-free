@@ -61,14 +61,20 @@ pub const AGENT_BRIEF: &str = concat!(
     "- Offer natural next steps briefly — tests, a commit, a build — and say plainly what you could not verify yourself.",
 );
 
+const REVIEW_AGENT_INSTRUCTION: &str = "- After the final related file change, call show_changes once to review the project-scoped aggregate diff. Do not advance the checkpoint after every file unless the user asks for incremental reviews.\n";
+
 fn configured_agent_brief(config: &AppConfig) -> String {
-    if !config.artifact_ingress.enabled {
-        return AGENT_BRIEF.to_string();
+    let mut brief = if config.review.enabled {
+        AGENT_BRIEF.to_string()
+    } else {
+        AGENT_BRIEF.replace(REVIEW_AGENT_INSTRUCTION, "")
+    };
+
+    if config.artifact_ingress.enabled {
+        brief.push_str("\n\n## Host files\n\n- Use import_host_file when the user attaches a file or asks you to place a ChatGPT-generated file into the project. Do not reconstruct binary files through write_file or substitute an arbitrary URL.");
     }
 
-    format!(
-        "{AGENT_BRIEF}\n\n## Host files\n\n- Use import_host_file when the user attaches a file or asks you to place a ChatGPT-generated file into the project. Do not reconstruct binary files through write_file or substitute an arbitrary URL."
-    )
+    brief
 }
 
 /// The initialize-time instructions. Multi-project initialization deliberately

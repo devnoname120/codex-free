@@ -31,6 +31,7 @@
     "entries": []
   },
   "review": {
+    "enabled": true,
     "maxPatchBytes": 524288
   },
   "audit": {

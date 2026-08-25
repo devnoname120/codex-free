@@ -235,7 +235,7 @@ Structured primitives — cheaper and safer than shelling out for the same job, 
 | `import_host_file` | Stream one ChatGPT attachment or generated file into a new project-relative path, with bounded size, SHA-256 verification and atomic no-overwrite publication |
 | `run_command` | Execute a command in the work directory (allowlist-restricted) |
 | `git_status` | Show git status, parsed into changed files with status codes |
-| `show_changes` | Compare the scoped working tree with the project-open or last-review checkpoint, optionally advancing the incremental baseline; compatible hosts render an interactive review card |
+| `show_changes` | When `review.enabled` is true (the default), compare the scoped working tree with the project-open or last-review checkpoint, optionally advancing the incremental baseline; compatible hosts render an interactive review card |
 | `git_push` | Push commits to a remote |
 | `git_commit` | Create a commit, optionally staging all tracked changes |
 | `git_log` | Show recent commit history |
@@ -517,10 +517,11 @@ The `output` block bounds what a single tool call may return. See [Context and m
 | `maxEntries` | `500` | Results per `glob` or `list_directory` call |
 | `maxTreeNodes` | `1000` | Nodes in one `tree` walk, counted across the whole tree rather than per directory |
 
-The `review` block bounds presentation without changing checkpoint semantics:
+The `review` block controls review availability and presentation:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `enabled` | `true` | Expose `show_changes`, advertise its MCP Apps resource, and maintain project review checkpoints. `false` removes the tool and review instructions and skips checkpoint capture |
 | `maxPatchBytes` | `524288` | Largest complete binary-capable patch returned by `show_changes`; a larger patch is omitted rather than cut mid-hunk, while file metadata and aggregate statistics remain available. `0` disables patch bodies |
 
 The `artifactIngress` block governs [native host-file ingress](#native-host-file-ingress):
@@ -667,12 +668,12 @@ To clear a stray binding, delete its file under `~/.codex-free/conversation-proj
 
 ## Review checkpoints and ChatGPT UI
 
-Review state is initialized immediately before the first project-scoped tool call for a conversation or generic MCP transport. That timing captures the checkout as the agent first sees it, before a write, formatter, generator, or shell command can change it. Mutating tool calls and `show_changes` are serialized for the same owner and project through tool completion, so a review cannot advance over a partially completed write. A resident `exec_command` process may continue changing files after its initiating call returns, so every review remains a point-in-time snapshot. Non-Git projects remain usable; inside a Git worktree, a snapshot failure blocks mutating tools rather than silently losing the baseline. Two baselines are maintained:
+With the default `review.enabled=true`, review state is initialized immediately before the first project-scoped tool call for a conversation or generic MCP transport. That timing captures the checkout as the agent first sees it, before a write, formatter, generator, or shell command can change it. Mutating tool calls and `show_changes` are serialized for the same owner and project through tool completion, so a review cannot advance over a partially completed write. A resident `exec_command` process may continue changing files after its initiating call returns, so every review remains a point-in-time snapshot. Non-Git projects remain usable; inside a Git worktree, a snapshot failure blocks mutating tools rather than silently losing the baseline. Setting `review.enabled=false` removes the tool and UI resource, omits the corresponding agent instruction, and skips this checkpoint lifecycle. Two baselines are maintained when review is enabled:
 
 - **project open** is immutable and shows the complete task diff;
 - **last review** advances only when `show_changes` is called with `advance=true` (the default), so the next review is incremental.
 
-`show_changes` accepts `since: "last_review" | "project_open"`, `advance`, and `include_patch`. Use `advance=false` for a read-only inspection. The result contains a concise text summary plus structured aggregate counts, bounded file records, rename sources, binary markers, warnings, and a complete unified binary patch when it fits `review.maxPatchBytes`. Oversized patches are omitted explicitly rather than returned as invalid partial hunks.
+`show_changes` accepts `since: "last_review" | "project_open"`, `advance`, and `include_patch`. Use `advance=false` for a read-only inspection. The result contains a concise text summary plus structured aggregate counts, bounded file records, rename sources, binary markers, warnings, and a complete unified binary patch when it fits `review.maxPatchBytes`. Git's histogram diff algorithm is used for both statistics and patch generation, and rename detection is enabled consistently so a moved file is represented by its old and new paths rather than an unrelated deletion/addition pair. Oversized patches are omitted explicitly rather than returned as invalid partial hunks.
 
 Snapshots use Git objects, but they do **not** touch the real index or working tree. Codex Free builds a private temporary index containing only the logical project root, then carries the same literal pathspec through every comparison. If the selected project is `packages/app` inside a monorepo, sibling changes under `packages/other` cannot enter its checkpoint or diff. Paths returned to the model and UI are relative to the selected project, not the repository root.
 
@@ -685,7 +686,7 @@ refs/codex-free/review/<project-hash>/<conversation-hash>/last-review
 
 The raw conversation identifier is never written. The refs survive MCP reconnects and Codex Free restarts. Generic MCP clients receive transport-local in-memory checkpoints instead. Each conversation/project pair retains only its current two referenced snapshots; superseded synthetic commits are ordinary Git-GC candidates. To inspect or remove old conversation refs manually, use `git for-each-ref refs/codex-free/review/` and `git update-ref -d <ref>`. Removing both refs resets that owner to the current scoped state on its next project call.
 
-Codex Free also advertises the standard MCP Apps extension and serves a self-contained resource at `ui://codex-free/review/mcp-app.html`. Compatible ChatGPT developer connectors render `show_changes` as a file, statistic and patch card. No separate web service or public app publication is needed; clients that ignore MCP Apps metadata still receive the same ordinary MCP result. The card updates at the `show_changes` tool-call boundary—it is not a continuous filesystem watcher.
+Codex Free also advertises the standard MCP Apps extension and serves a self-contained resource at `ui://codex-free/review/mcp-app.html`. Compatible ChatGPT developer connectors render `show_changes` as a responsive statistic and file card. Files are collapsed initially; opening one materializes only that file's diff, with long lines scrolling inside the file panel so the card remains bounded on narrow screens. Renames show both paths in the file header. No separate web service or public app publication is needed; clients that ignore MCP Apps metadata still receive the same ordinary MCP result. The card updates at the `show_changes` tool-call boundary—it is not a continuous filesystem watcher.
 
 ## Context and memory
 
