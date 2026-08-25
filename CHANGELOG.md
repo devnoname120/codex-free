@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Multi-project `set_project_root` now accepts HTTPS and SSH GitHub repository
+  URLs, HTTPS branch URLs (`/tree/<branch>`), and HTTPS pull-request URLs
+  (`/pull/<number>`). It reuses an unambiguous local checkout when available,
+  otherwise clones into `projectCloneDir` (or `--project-clone-dir`, defaulting to
+  the access root). Branch and PR selections fetch the requested ref and use an
+  isolated detached worktree when the source checkout is on another commit.
+
+### Security
+
+- GitHub project cloning and target fetching are restricted to normalized
+  repository, branch, and pull-request URLs on `github.com`; embedded credentials,
+  unsupported subpages, and insecure/arbitrary transports are rejected. The clone
+  directory is revalidated beneath the access root, concurrent repository
+  resolution is serialized, interactive credential prompts are disabled, cloned
+  remotes are verified, and destination collisions are refused. Existing source
+  checkouts are never switched to satisfy a branch or PR URL, and a session already
+  bound to another project is rejected before any clone or fetch side effect.
+
 ## [1.4.0] - 2026-08-25
 
 ### Fixed
