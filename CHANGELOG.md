@@ -52,6 +52,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `artifactIngress` configuration for enablement, per-file size, whole-request and
   idle timeouts, redirect limits, process-wide concurrent import limits, and a
   configurable `allowedHosts` download allowlist.
+- Upstream MCP Streamable HTTP support alongside stdio. Codex Free now imports
+  compatible `url` entries from Codex configuration and accepts remote entries in
+  `codex.config.json`, including bearer-token environment variables, static and
+  environment-backed HTTP headers, startup timeouts, per-tool cancellable
+  timeouts, the existing tool filters, and gateway mode.
 
 ### Fixed
 
@@ -95,6 +100,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Git config, so an untrusted project could otherwise plant a script that runs
   on the next conversation binding. When the flag is off, the environment is
   neither copied into the worktree nor executed.
+- Remote bearer tokens and environment-backed headers are resolved only when the
+  upstream connection is created and are never included in discovery reports.
+  Configured tool-call timeouts use RMCP cancellation rather than abandoning an
+  in-flight request. Legacy SSE/WebSocket transports, literal Codex
+  `bearer_token` values, mixed stdio/HTTP settings, and ambiguous duplicate
+  Authorization configuration are rejected explicitly.
+- The upstream Streamable HTTP client's redirect policy is now set to `none` in
+  Codex Free's own code (`build_upstream_client`) rather than inherited from
+  RMCP's default client, so the guarantee that caller-supplied
+  `Authorization`/custom headers are never replayed to a redirect target cannot
+  silently regress under a dependency bump; a regression test asserts it.
+
+### Changed
+
+- Consolidated on a single `reqwest` 0.13 (the version RMCP's Streamable HTTP
+  client transport uses), removing the second `reqwest` 0.12 that was compiled
+  in alongside it. The whole process now shares one TLS stack — rustls with the
+  ring crypto provider — installed once before any HTTP client is built, so
+  there is a single set of trust roots and no aws-lc-rs backend.
 
 ## [1.2.0] - 2026-08-24
 
