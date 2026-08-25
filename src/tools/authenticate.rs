@@ -124,7 +124,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut config = default_config(root.path().to_path_buf());
         let token = "codex_free_chat_0123456789abcdef0123456789abcdef";
-        config.conversation_auth_token = Some(token.to_string());
+        config.conversation_auth_token = Some(token.into());
         let store = Arc::new(ConversationAuthorizationStore::new());
         let session = SessionState::new();
         let first = ConversationIdentity::from_openai_session("first").unwrap();
@@ -150,7 +150,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut config = default_config(root.path().to_path_buf());
         config.conversation_auth_token =
-            Some("codex_free_chat_0123456789abcdef0123456789abcdef".to_string());
+            Some("codex_free_chat_0123456789abcdef0123456789abcdef".into());
         let store = Arc::new(ConversationAuthorizationStore::new());
         let session = SessionState::new();
         let identity = ConversationIdentity::from_openai_session("first").unwrap();
@@ -176,7 +176,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut config = default_config(root.path().to_path_buf());
         let token = "codex_free_chat_0123456789abcdef0123456789abcdef";
-        config.conversation_auth_token = Some(token.to_string());
+        config.conversation_auth_token = Some(token.into());
         let store = Arc::new(ConversationAuthorizationStore::new());
         let first_session = SessionState::new();
         let second_session = SessionState::new();

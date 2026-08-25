@@ -54,7 +54,7 @@ fn artifact_ingress_can_be_omitted_by_configuration() {
 fn conversation_auth_mode_adds_authenticate_before_protected_tools() {
     let mut config = default_config(PathBuf::from("/tmp"));
     config.conversation_auth_token =
-        Some("codex_free_chat_0123456789abcdef0123456789abcdef".to_string());
+        Some("codex_free_chat_0123456789abcdef0123456789abcdef".into());
     let tools = load_tools_for_config(&config);
     assert_eq!(tools.len(), 28);
     assert_eq!(tools[0].name(), "authenticate");

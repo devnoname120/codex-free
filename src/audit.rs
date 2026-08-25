@@ -732,7 +732,7 @@ mod tests {
         config.audit.include_command_preview = true;
         config.api_key = Some("literal-known-secret".to_string());
         config.conversation_auth_token =
-            Some("codex_free_chat_0123456789abcdef0123456789abcdef".to_string());
+            Some("codex_free_chat_0123456789abcdef0123456789abcdef".into());
         let logger = AuditLogger::open(&config).unwrap().unwrap();
         let redacted = logger.redact_command(
             "tool --github-token prefixed-token OPENAI_API_KEY=assigned-key literal-known-secret codex_free_chat_0123456789abcdef0123456789abcdef \"api_key\": \"json-secret\" Authorization: Basic basic-token Bearer abc.def",
