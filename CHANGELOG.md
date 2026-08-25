@@ -25,6 +25,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `import_host_file` now participates in the same fail-closed, serialized review
   checkpoint protocol as every other project-writing tool, so imports cannot race
   review capture or proceed after a checkpoint-capture failure.
+- The conversation authorization check no longer holds its in-memory lock while
+  probing the durable marker on disk, so a cache miss for one conversation cannot
+  serialize every other conversation's authorization behind blocking filesystem
+  reads.
 
 ### Security
 
