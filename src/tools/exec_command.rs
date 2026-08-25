@@ -173,8 +173,7 @@ impl Tool for ExecCommand {
 
         let (output, exited, buffer_truncated) =
             exec_session.yield_output_with_metadata(yield_ms).await;
-        let (text, original_token_count, truncated) =
-            truncate_output(&output, max_output_tokens);
+        let (text, original_token_count, truncated) = truncate_output(&output, max_output_tokens);
 
         let mut result = UnifiedExecOutput {
             chunk_id: Some(generate_chunk_id()),
