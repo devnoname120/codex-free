@@ -6,8 +6,8 @@
 //! as the default, so the default path matches — only `tty: true` is unsupported.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,7 @@ use crate::project_bindings::{
 use crate::project_clone::ProjectReference;
 use crate::review::TransportReviewState;
 use crate::types::{AppConfig, PlanState, WorktreeMode};
-use crate::worktrees::create_managed_worktree_at;
+use crate::worktrees::{create_managed_worktree_at, load_metadata, metadata_path_for_worktree};
 
 // Codex constants (shell_spec.rs). Kept as code, not config, because they are
 // part of matching Codex's tool semantics rather than local policy.
@@ -570,6 +570,7 @@ fn reap_conversation_states(
 /// backed by [`ConversationExecSessionStore`].
 pub struct SessionState {
     exec: Arc<ExecSessionState>,
+    connector_authorized: Arc<AtomicBool>,
     pub plan: Arc<StdMutex<Option<PlanState>>>,
     /// The transport-session project binding. Shared (behind `Arc`) with any
     /// conversation-scoped view derived through `with_exec_state`, and carries
@@ -594,10 +595,34 @@ struct TransportProjectBinding {
     worktrees_root: Option<PathBuf>,
 }
 
+fn validate_transport_metadata_path(
+    stored: &str,
+    expected: &Path,
+    label: &str,
+    metadata_path: &Path,
+) -> Result<(), String> {
+    let stored_path = PathBuf::from(stored);
+    let canonical = std::fs::canonicalize(&stored_path).map_err(|error| {
+        format!(
+            "The {label} recorded in managed-worktree metadata {} cannot be resolved: {}: {error}. Open a new session for another project.",
+            metadata_path.display(),
+            stored_path.display()
+        )
+    })?;
+    if canonical != expected {
+        return Err(format!(
+            "The {label} recorded in managed-worktree metadata {} does not match the MCP transport-session binding. Open a new session for another project.",
+            metadata_path.display()
+        ));
+    }
+    Ok(())
+}
+
 impl Default for SessionState {
     fn default() -> Self {
         Self {
             exec: Arc::new(ExecSessionState::new()),
+            connector_authorized: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(StdMutex::new(None)),
             project_binding: Arc::new(StdMutex::new(None)),
             project_selection_lock: Arc::new(TokioMutex::new(())),
@@ -615,6 +640,7 @@ impl SessionState {
     fn with_exec_state(&self, exec: Arc<ExecSessionState>) -> Self {
         Self {
             exec,
+            connector_authorized: self.connector_authorized.clone(),
             plan: self.plan.clone(),
             project_binding: self.project_binding.clone(),
             project_selection_lock: self.project_selection_lock.clone(),
@@ -626,6 +652,14 @@ impl SessionState {
     /// The stable per-transport identifier stamped into audit-log events.
     pub fn audit_id(&self) -> u64 {
         self.audit_id
+    }
+
+    pub fn connector_authorized(&self) -> bool {
+        self.connector_authorized.load(Ordering::Acquire)
+    }
+
+    pub fn authorize_connector(&self) {
+        self.connector_authorized.store(true, Ordering::Release);
     }
 
     /// Starts cleanup for generic-client, transport-owned resident commands.
@@ -671,34 +705,109 @@ impl SessionState {
                 config.work_dir.display()
             )
         })?;
-        // The originally selected source must still resolve inside the access
-        // root; this catches a project deleted, moved, or replaced since it was
-        // bound. A managed worktree lives outside the access root by design, so
-        // this containment check is applied to the source selection, not the
-        // effective work directory below.
-        let source_root = std::fs::canonicalize(&binding.source_project_root).map_err(|error| {
+        let source_project_root =
+            std::fs::canonicalize(&binding.source_project_root).map_err(|error| {
             format!(
-                "The project bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                "The source project bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
                 binding.source_project_root.display()
             )
         })?;
-        if source_root != access_root && !source_root.starts_with(&access_root) {
+        if !source_project_root.is_dir() {
             return Err(format!(
-                "The project bound to this MCP transport session now resolves outside the configured access root: {}. Open a new session for another project.",
-                source_root.display()
+                "The source project bound to this MCP transport session is no longer a directory: {}. Open a new session for another project.",
+                source_project_root.display()
             ));
         }
-        // The effective work directory (the source itself, or a managed
-        // worktree created under the worktrees root) must still be a directory.
+        if source_project_root != access_root && !source_project_root.starts_with(&access_root) {
+            return Err(format!(
+                "The source project bound to this MCP transport session now resolves outside the configured access root: {}. Open a new session for another project.",
+                source_project_root.display()
+            ));
+        }
+
         let project_root = std::fs::canonicalize(&binding.project_root).map_err(|error| {
             format!(
-                "The working directory bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                "The active project bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
                 binding.project_root.display()
             )
         })?;
         if !project_root.is_dir() {
             return Err(format!(
-                "The working directory bound to this MCP transport session is no longer a directory: {}. Open a new session for another project.",
+                "The active project bound to this MCP transport session is no longer a directory: {}. Open a new session for another project.",
+                project_root.display()
+            ));
+        }
+        if binding.managed_worktree {
+            let worktree_git_root = binding.worktree_git_root.as_ref().ok_or_else(|| {
+                "The managed worktree bound to this MCP transport session has no recorded Git root. Open a new session for another project.".to_string()
+            })?;
+            let worktrees_root = binding.worktrees_root.as_ref().ok_or_else(|| {
+                "The managed worktree bound to this MCP transport session has no recorded worktree root. Open a new session for another project.".to_string()
+            })?;
+            let worktree_git_root = std::fs::canonicalize(worktree_git_root).map_err(|error| {
+                format!(
+                    "The managed worktree Git root bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                    worktree_git_root.display()
+                )
+            })?;
+            let worktrees_root = std::fs::canonicalize(worktrees_root).map_err(|error| {
+                format!(
+                    "The managed worktree root bound to this MCP transport session no longer exists or cannot be resolved: {}: {error}. Open a new session for another project.",
+                    worktrees_root.display()
+                )
+            })?;
+            if worktree_git_root == worktrees_root
+                || !worktree_git_root.starts_with(&worktrees_root)
+            {
+                return Err(format!(
+                    "The managed worktree Git root {} is outside its recorded worktree root {}. Open a new session for another project.",
+                    worktree_git_root.display(),
+                    worktrees_root.display()
+                ));
+            }
+            if project_root != worktree_git_root && !project_root.starts_with(&worktree_git_root) {
+                return Err(format!(
+                    "The active project {} is outside its managed worktree Git root {}. Open a new session for another project.",
+                    project_root.display(),
+                    worktree_git_root.display()
+                ));
+            }
+
+            let metadata_path = metadata_path_for_worktree(&worktree_git_root).ok_or_else(|| {
+                format!(
+                    "Could not locate managed-worktree metadata for {}. Open a new session for another project.",
+                    worktree_git_root.display()
+                )
+            })?;
+            let metadata = load_metadata(&metadata_path)?;
+            validate_transport_metadata_path(
+                &metadata.source_project_root,
+                &source_project_root,
+                "source project root",
+                &metadata_path,
+            )?;
+            validate_transport_metadata_path(
+                &metadata.project_root,
+                &project_root,
+                "active project root",
+                &metadata_path,
+            )?;
+            validate_transport_metadata_path(
+                &metadata.worktree_git_root,
+                &worktree_git_root,
+                "worktree Git root",
+                &metadata_path,
+            )?;
+            validate_transport_metadata_path(
+                &metadata.worktrees_root,
+                &worktrees_root,
+                "worktree root",
+                &metadata_path,
+            )?;
+        } else if project_root != source_project_root {
+            return Err(format!(
+                "The direct project binding for this MCP transport session now resolves inconsistently: source {} versus active {}. Open a new session for another project.",
+                source_project_root.display(),
                 project_root.display()
             ));
         }
@@ -1081,6 +1190,79 @@ mod tests {
     fn wrap_only_powershell() {
         assert_eq!(wrap_for_shell("ls", "bash"), "ls");
         assert!(wrap_for_shell("ls", "powershell").contains("$LASTEXITCODE"));
+    }
+
+    #[test]
+    fn direct_transport_binding_rejects_an_active_root_different_from_its_source() {
+        let access = tempfile::tempdir().unwrap();
+        let source = access.path().join("project");
+        std::fs::create_dir(&source).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut config = crate::config::default_config(access.path().to_path_buf());
+        config.multi_project = true;
+        let state = SessionState::new();
+        *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
+            source_project_root: source,
+            project_root: outside.path().to_path_buf(),
+            managed_worktree: false,
+            worktree_git_root: None,
+            worktrees_root: None,
+        });
+
+        let error = state.effective_config(&config).unwrap_err();
+        assert!(error.contains("direct project binding"), "{error}");
+    }
+
+    #[test]
+    fn managed_transport_binding_rejects_a_git_root_outside_its_recorded_root() {
+        let access = tempfile::tempdir().unwrap();
+        let source = access.path().join("project");
+        std::fs::create_dir(&source).unwrap();
+        let worktrees = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut config = crate::config::default_config(access.path().to_path_buf());
+        config.multi_project = true;
+        let state = SessionState::new();
+        *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
+            source_project_root: source,
+            project_root: outside.path().to_path_buf(),
+            managed_worktree: true,
+            worktree_git_root: Some(outside.path().to_path_buf()),
+            worktrees_root: Some(worktrees.path().to_path_buf()),
+        });
+
+        let error = state.effective_config(&config).unwrap_err();
+        assert!(
+            error.contains("outside its recorded worktree root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn managed_transport_binding_rejects_an_active_root_outside_its_git_root() {
+        let access = tempfile::tempdir().unwrap();
+        let source = access.path().join("project");
+        std::fs::create_dir(&source).unwrap();
+        let worktrees = tempfile::tempdir().unwrap();
+        let worktree_git_root = worktrees.path().join("managed");
+        std::fs::create_dir(&worktree_git_root).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut config = crate::config::default_config(access.path().to_path_buf());
+        config.multi_project = true;
+        let state = SessionState::new();
+        *state.project_binding.lock().unwrap() = Some(TransportProjectBinding {
+            source_project_root: source,
+            project_root: outside.path().to_path_buf(),
+            managed_worktree: true,
+            worktree_git_root: Some(worktree_git_root),
+            worktrees_root: Some(worktrees.path().to_path_buf()),
+        });
+
+        let error = state.effective_config(&config).unwrap_err();
+        assert!(
+            error.contains("outside its managed worktree Git root"),
+            "{error}"
+        );
     }
 
     #[test]

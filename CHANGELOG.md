@@ -26,6 +26,46 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checkouts are never switched to satisfy a branch or PR URL, and a session already
   bound to another project is rejected before any clone or fetch side effect.
 
+## [1.5.0] - 2026-08-25
+
+### Added
+
+- Optional per-conversation connector authorization through
+  `conversationAuthToken`. Quickstart can generate and persist a high-entropy
+  token, protect the config on Unix, and print a one-line instruction for an
+  individual chat or ChatGPT Project instructions. The conditional `authenticate`
+  tool verifies the token once, then restores the grant from stable ChatGPT
+  conversation metadata across connector reconnects and server restarts; generic
+  MCP clients use transport-session authorization.
+
+### Fixed
+
+- Codex CLI enrichment now imports plugin-provided Streamable HTTP MCP servers,
+  including environment-backed bearer authentication, static and environment
+  headers, tool filters, and startup/tool timeouts. Transport-specific fields
+  remain fail-closed, and literal bearer tokens are still rejected.
+- `import_host_file` now participates in the same fail-closed, serialized review
+  checkpoint protocol as every other project-writing tool, so imports cannot race
+  review capture or proceed after a checkpoint-capture failure.
+- The conversation authorization check no longer holds its in-memory lock while
+  probing the durable marker on disk, so a cache miss for one conversation cannot
+  serialize every other conversation's authorization behind blocking filesystem
+  reads.
+
+### Security
+
+- Conversation authorization blocks every non-authentication tool and withholds
+  the project-aware initialization brief until verification. Durable markers store
+  only a hashed conversation identity and grant, in a namespace derived from the
+  canonical work directory and current token, so token rotation invalidates older
+  grants without copying the token into the cache. Audit command previews also
+  redact the configured conversation token. The token remains plaintext in
+  `codex.config.json` by design and must be kept private and out of version control.
+- Generic MCP transport-session project bindings now revalidate the complete
+  direct-checkout or managed-worktree relationship on every project tool call.
+  A moved, replaced, or internally inconsistent active root cannot escape its
+  selected source or recorded managed-worktree boundary.
+
 ## [1.4.0] - 2026-08-25
 
 ### Fixed
@@ -300,7 +340,8 @@ filename sort uses byte/Unicode ordering rather than `localeCompare`;
 `write_file` reports UTF-8 byte counts; `exec_command` uses plain pipes, not a
 PTY. See the README's "Notes on the port" for the full list.
 
-[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/hypnguyen1209/codex-free/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/hypnguyen1209/codex-free/compare/v1.1.0...v1.2.0

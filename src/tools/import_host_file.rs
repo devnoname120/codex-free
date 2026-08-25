@@ -184,6 +184,10 @@ impl Tool for ImportHostFile {
         false
     }
 
+    fn may_modify_project(&self) -> bool {
+        true
+    }
+
     async fn call(&self, args: Value, config: &AppConfig, _session: &SessionState) -> ToolResult {
         self.run(args, config, &CancellationToken::new()).await
     }
@@ -277,6 +281,9 @@ mod tests {
         cancellation.cancel();
         let context = ToolRequestContext {
             conversation: None,
+            conversation_authorizations: Arc::new(
+                crate::conversation_auth::ConversationAuthorizationStore::new(),
+            ),
             review_checkpoints: Arc::new(crate::review::ReviewCheckpointManager::new()),
             cancellation,
         };

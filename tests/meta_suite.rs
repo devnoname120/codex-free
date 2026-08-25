@@ -51,6 +51,23 @@ fn artifact_ingress_can_be_omitted_by_configuration() {
 }
 
 #[test]
+fn conversation_auth_mode_adds_authenticate_before_protected_tools() {
+    let mut config = default_config(PathBuf::from("/tmp"));
+    config.conversation_auth_token =
+        Some("codex_free_chat_0123456789abcdef0123456789abcdef".into());
+    let tools = load_tools_for_config(&config);
+    assert_eq!(tools.len(), 28);
+    assert_eq!(tools[0].name(), "authenticate");
+
+    config.multi_project = true;
+    let tools = load_tools_for_config(&config);
+    assert_eq!(tools.len(), 30);
+    assert_eq!(tools[0].name(), "authenticate");
+    assert_eq!(tools[1].name(), "list_projects");
+    assert_eq!(tools[2].name(), "set_project_root");
+}
+
+#[test]
 fn all_tools_have_unique_names() {
     let tools = load_tools();
     let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -189,6 +206,7 @@ fn mutating_tools_are_classified_for_checkpoint_fail_closed_behavior() {
             "apply_patch".to_string(),
             "exec_command".to_string(),
             "git_commit".to_string(),
+            "import_host_file".to_string(),
             "run_command".to_string(),
             "write_file".to_string(),
             "write_stdin".to_string(),

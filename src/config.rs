@@ -16,13 +16,15 @@ use crate::codex_config::codex_config_path;
 use crate::codex_mcp::{
     CodexMcpImport, discover_additional_codex_mcp_servers_with_cli, discover_codex_mcp_servers,
 };
+use crate::conversation_auth::validate_conversation_auth_token;
 use crate::openai_tunnel::validate_tunnel_id;
 use crate::project_catalog::{ProjectCatalog, discover_project_catalog_at};
 use crate::types::{
     AppConfig, ArtifactIngressConfig, AuditConfig, CodexProjectCatalogConfig, CommandConfig,
-    ExecConfig, ExecMode, IgnoreConfig, McpServerSpec, MemoryConfig, OpenAiTunnelConfig,
-    OutputConfig, ProjectCatalogConfig, ProjectCatalogEntryConfig, ProjectDocConfig, ReviewConfig,
-    SkillsConfig, TreeConfig, WorktreeConfig, WorktreeMode, WorktreeUpstreamRefreshMode,
+    ConversationAuthToken, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec, MemoryConfig,
+    OpenAiTunnelConfig, OutputConfig, ProjectCatalogConfig, ProjectCatalogEntryConfig,
+    ProjectDocConfig, ReviewConfig, SkillsConfig, TreeConfig, WorktreeConfig, WorktreeMode,
+    WorktreeUpstreamRefreshMode,
 };
 use crate::util::home_dir;
 
@@ -436,6 +438,7 @@ impl PartialMcpServerSpec {
 #[serde(rename_all = "camelCase")]
 struct FileConfig {
     api_key: Option<String>,
+    conversation_auth_token: Option<String>,
     port: Option<u16>,
     multi_project: Option<bool>,
     project_clone_dir: Option<String>,
@@ -635,6 +638,7 @@ pub fn default_config(work_dir: std::path::PathBuf) -> AppConfig {
         project_catalog: ProjectCatalogConfig::default(),
         worktrees: default_worktree_config(),
         api_key: None,
+        conversation_auth_token: None,
         port: 3000,
         allowed_commands: default_allowed_commands(),
         tree: default_tree(),
@@ -1024,6 +1028,11 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         cli.project_clone_dir.as_deref(),
         file.project_clone_dir.as_deref(),
     )?;
+    let conversation_auth_token = file.conversation_auth_token.take();
+    if let Some(token) = conversation_auth_token.as_deref() {
+        validate_conversation_auth_token(token)?;
+    }
+    let conversation_auth_token = conversation_auth_token.map(ConversationAuthToken::from);
 
     let mut tree = default_tree();
     if let Some(t) = file.tree.take() {
@@ -1087,6 +1096,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         project_catalog,
         worktrees,
         api_key,
+        conversation_auth_token,
         port: cli.port.or(file.port).unwrap_or(3000),
         allowed_commands: file
             .allowed_commands
@@ -1251,6 +1261,44 @@ mod tests {
         .unwrap();
         let error = load_config(cli(&access, &outside_path)).unwrap_err();
         assert!(error.contains("must resolve inside"), "{error}");
+    }
+
+    #[test]
+    fn loads_conversation_auth_token_from_the_config_file() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("config.json");
+        let token = "codex_free_chat_0123456789abcdef0123456789abcdef";
+        std::fs::write(
+            &config_path,
+            serde_json::to_vec(&json!({
+                "codexMcp": { "enabled": false },
+                "conversationAuthToken": token
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let config = load_config(cli(root.path(), &config_path)).unwrap();
+
+        assert_eq!(config.conversation_auth_token.as_deref(), Some(token));
+        let debug = format!("{config:?}");
+        assert!(debug.contains("conversation_auth_token: Some(<redacted>)"));
+        assert!(!debug.contains(token));
+    }
+
+    #[test]
+    fn rejects_malformed_conversation_auth_tokens() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"codexMcp":{"enabled":false},"conversationAuthToken":"too short"}"#,
+        )
+        .unwrap();
+
+        let error = load_config(cli(root.path(), &config_path)).unwrap_err();
+
+        assert!(error.contains("conversationAuthToken"));
     }
 
     #[test]
