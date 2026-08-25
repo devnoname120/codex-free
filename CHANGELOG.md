@@ -16,6 +16,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   conversation metadata across connector reconnects and server restarts; generic
   MCP clients use transport-session authorization.
 
+### Fixed
+
+- Codex CLI enrichment now imports plugin-provided Streamable HTTP MCP servers,
+  including environment-backed bearer authentication, static and environment
+  headers, tool filters, and startup/tool timeouts. Transport-specific fields
+  remain fail-closed, and literal bearer tokens are still rejected.
+- `import_host_file` now participates in the same fail-closed, serialized review
+  checkpoint protocol as every other project-writing tool, so imports cannot race
+  review capture or proceed after a checkpoint-capture failure.
+
 ### Security
 
 - Conversation authorization blocks every non-authentication tool and withholds
@@ -25,6 +35,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   grants without copying the token into the cache. Audit command previews also
   redact the configured conversation token. The token remains plaintext in
   `codex.config.json` by design and must be kept private and out of version control.
+- Generic MCP transport-session project bindings now revalidate the complete
+  direct-checkout or managed-worktree relationship on every project tool call.
+  A moved, replaced, or internally inconsistent active root cannot escape its
+  selected source or recorded managed-worktree boundary.
 
 ## [1.4.0] - 2026-08-25
 
