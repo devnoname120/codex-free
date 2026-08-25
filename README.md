@@ -2,6 +2,8 @@
 
 *Codex Free, rewritten in Rust (but you still have to buy ChatGPT Plus)*
 
+> 📖 **New here? Start with the [Wiki](https://github.com/hypnguyen1209/codex-free/wiki)** — an end-user guide covering [installation](https://github.com/hypnguyen1209/codex-free/wiki/Installation), [every CLI argument](https://github.com/hypnguyen1209/codex-free/wiki/CLI-Reference), [every config option](https://github.com/hypnguyen1209/codex-free/wiki/Configuration), and [how it all works end-to-end](https://github.com/hypnguyen1209/codex-free/wiki/How-It-Works). This README is the complete technical reference; the wiki is the friendlier path in.
+
 A local MCP bridge server that lets ChatGPT Web Pro call tools on your machine: read/write files, run shell commands, git operations, search. Codex Free is a faithful Rust port of the original Bun + TypeScript `codex-free`, built on **tokio + axum** and the official [`rmcp`](https://crates.io/crates/rmcp) SDK over Streamable HTTP. It can expose that local MCP endpoint through OpenAI's native [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels), without opening an inbound port or publishing a general-purpose URL.
 
 In native-tunnel mode, Codex Free listens only on `127.0.0.1`, protects the MCP endpoint with a random per-process bearer token, starts OpenAI's official runtime-only tunnel client, and supervises it for the lifetime of the server. The tunnel client makes outbound HTTPS requests to OpenAI and forwards tunnel traffic to the authenticated loopback MCP endpoint. A conventional externally managed tunnel remains available as an alternative.
@@ -1067,6 +1069,16 @@ cargo fmt                                    # format
 ```
 
 The design and module layout are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Documentation
+
+- **[Wiki](https://github.com/hypnguyen1209/codex-free/wiki)** — the end-user guide, from arguments to operational flow. Good starting points:
+  - [Quick Start](https://github.com/hypnguyen1209/codex-free/wiki/Quick-Start) · [Installation](https://github.com/hypnguyen1209/codex-free/wiki/Installation) · [Connecting to ChatGPT](https://github.com/hypnguyen1209/codex-free/wiki/Connecting-to-ChatGPT)
+  - [CLI Reference](https://github.com/hypnguyen1209/codex-free/wiki/CLI-Reference) · [Configuration](https://github.com/hypnguyen1209/codex-free/wiki/Configuration) · [Tools Reference](https://github.com/hypnguyen1209/codex-free/wiki/Tools-Reference)
+  - [How It Works](https://github.com/hypnguyen1209/codex-free/wiki/How-It-Works) · [Security Model](https://github.com/hypnguyen1209/codex-free/wiki/Security-Model) · [Multi-Project Mode](https://github.com/hypnguyen1209/codex-free/wiki/Multi-Project-Mode) · [Bridging MCP Servers](https://github.com/hypnguyen1209/codex-free/wiki/Bridging-MCP-Servers)
+  - [Troubleshooting](https://github.com/hypnguyen1209/codex-free/wiki/Troubleshooting) · [FAQ](https://github.com/hypnguyen1209/codex-free/wiki/FAQ)
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — internal design and module layout, for contributors.
+- **[CHANGELOG.md](CHANGELOG.md)** — release history.
 
 ## License
 
