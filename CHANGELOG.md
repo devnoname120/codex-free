@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Progressive disclosure for transitive MCP tools. Catalog-mode upstreams keep
+  their complete filtered `tools/list` private and share four fixed downstream
+  tools for source discovery, BM25-ranked schema-aware search, exact tool
+  metadata/schema retrieval, and raw-name dispatch. Search indexes source and
+  implementation metadata, tool names/titles/descriptions, and recursively useful
+  input/output-schema fields without registering every transitive definition in
+  the ChatGPT connector catalogue.
 - User-level config discovery through `~/.codex-free/codex.config.json` and the
   `CODEX_FREE_CONFIG` environment variable. Explicit `--config` remains highest
   priority; the old working-directory `codex.config.json` is retained as a warned
@@ -15,6 +22,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- MCP servers imported automatically from Codex `config.toml` or the Codex CLI
+  (including plugin-provided servers) now default to catalog mode. Standalone
+  explicit `mcpServers` entries retain the historical direct default, while a
+  same-name explicit overlay preserves imported provenance unless it sets
+  `mode` to `direct`, `gateway`, or `catalog`. This provenance-based policy
+  replaces flattened automatic exposure without relying on a tool-count
+  heuristic; set `"mode": "direct"` on an imported server to restore the prior
+  connector manifest behavior.
+- Direct MCP proxies now retain upstream titles, annotations, icons, `_meta`, and
+  output schemas. Direct, gateway, and catalog calls share cancellable forwarding
+  and preserve text, images, structured content, result metadata, and tool-error
+  state. The generic catalog dispatcher advertises conservative side-effect hints
+  because one downstream capability cannot reproduce the selected upstream
+  tool's per-tool ChatGPT approval semantics.
 - `quickstart` now writes the user-level config by default and omits `--config`
   from its generated launch command for that canonical path. Explicit CLI or
   environment-selected paths continue to be preserved.
