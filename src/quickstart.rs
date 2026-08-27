@@ -268,7 +268,7 @@ where
     if conversation_auth_token.is_some() {
         writeln!(
             wizard.output,
-            "  Conversation token: stored in the config file; do not commit or share that file"
+            "  Conversation authorization: enabled; do not commit or share that config file"
         )?;
     }
     let command = launch_command(
@@ -584,7 +584,7 @@ where
 {
     writeln!(
         wizard.output,
-        "\n4. Configure ChatGPT conversation authentication"
+        "\n4. Configure ChatGPT conversation authorization"
     )?;
     writeln!(
         wizard.output,
@@ -861,7 +861,8 @@ mod tests {
 
     const TUNNEL_ID: &str = "tunnel_0123456789abcdef0123456789abcdef";
     const RUNTIME_KEY: &str = "sk-runtime-test-key_123";
-    const CONVERSATION_TOKEN: &str = "codex_free_chat_0123456789abcdef0123456789abcdef";
+    const CONVERSATION_TOKEN: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     struct GuardedPromptOutput {
         bytes: Vec<u8>,
@@ -1057,7 +1058,7 @@ mod tests {
         assert!(output.contains("Authentication: No Authentication"));
         assert!(output.contains(TUNNEL_ID));
         assert!(!output.contains("Require each new ChatGPT conversation"));
-        assert!(!output.contains("Configure ChatGPT conversation authentication"));
+        assert!(!output.contains("Configure ChatGPT conversation authorization"));
         assert!(!output.contains(RUNTIME_KEY));
 
         #[cfg(unix)]
@@ -1167,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_existing_conversation_token_fails_before_writing_credentials() {
+    fn malformed_existing_conversation_auth_token_fails_before_writing_credentials() {
         let root = TempDir::new().unwrap();
         let project = root.path().join("project");
         fs::create_dir_all(&project).unwrap();

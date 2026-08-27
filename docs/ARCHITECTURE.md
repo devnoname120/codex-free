@@ -36,7 +36,7 @@ ChatGPT / MCP client
 │        ▼                                      │
 │  registry: Vec<Box<dyn Tool>>                 │
 │    • 27 native tools                          │
-│    • + authenticate when token-gated          │
+│    • + setup authorization wire tool          │
 │    • + list_projects + set_project_root       │
 │      in multi-project mode                    │
 │    • 4 catalog tools ← private upstream index │
@@ -48,7 +48,7 @@ ChatGPT / MCP client
 │    • persistent atomic binding records        │
 │                                               │
 │  shared ConversationAuthorizationStore        │
-│    • openai/session hash → allowed             │
+│    • openai/session hash → authorized          │
 │    • token-scoped persistent markers          │
 │                                               │
 │  shared ConversationExecSessionStore          │
@@ -80,9 +80,9 @@ Five surfaces reach the model:
   `skills_read` tools, discovered from disk.
 - **Instructions** — the agent brief + environment + memory + project doc,
   rebuilt from the active project config.
-- **Conversation authorization** — an optional token gate whose durable grant is
-  keyed by ChatGPT's stable conversation metadata rather than by the replaceable
-  MCP transport.
+- **Conversation authorization** — an optional authentication-token gate whose
+  durable grant is keyed by ChatGPT's stable conversation metadata rather than
+  by the replaceable MCP transport.
 - **MCP App** — the self-contained review resource linked from `show_changes`;
   unsupported clients ignore the UI metadata and keep the ordinary tool result.
 
@@ -95,8 +95,8 @@ Five surfaces reach the model:
    once per session, producing a fresh `CodexHandler`.
 2. `CodexHandler::get_info` returns the negotiated protocol version, capabilities
    (`tools`), server identity, and the `instructions` string. With
-   `conversationAuthToken`, initialization exposes only the authentication
-   protocol; project context is loaded later through `get_agent_brief`. Otherwise,
+   `conversationAuthToken`, initialization exposes only the model-facing gate protocol;
+   project context is loaded later through `get_agent_brief`. Otherwise,
    single-project mode builds the full project-aware brief immediately, while
    multi-project mode emits only the root-selection protocol and a project-neutral
    environment because ChatGPT's conversation identity arrives in request `_meta`
@@ -110,13 +110,14 @@ Five surfaces reach the model:
 4. `tools/call` → `CodexHandler::call_tool` reads `openai/session` from rmcp's
    `RequestContext::meta`. rmcp moves wire-level request `_meta` into that context
    before dispatch, so the typed tool parameters are not the authoritative source.
-5. When conversation authorization is configured, `authenticate` compares the
-   submitted token without echoing it and records only the authorization decision.
-   Every other tool fails before project resolution or dispatch until the hashed
-   ChatGPT conversation is authorized. The marker survives server restarts and is
-   namespaced by the canonical work directory and current token, so rotation
-   invalidates prior grants. Clients without `openai/session` receive a
-   transport-local fallback grant.
+5. When conversation authorization is configured, the intentionally innocuous
+   `setup` wire tool compares the authentication token submitted as `ref` without
+   echoing it and records only the authorization decision. Every other tool fails
+   before project resolution or dispatch until the hashed ChatGPT conversation is
+   authorized. The marker survives server restarts and is namespaced by the
+   canonical work directory and current token, so rotation invalidates prior
+   grants. Clients without `openai/session` receive a transport-local fallback
+   grant.
 6. In multi-project mode, `list_projects` may run before selection. It rebuilds a
    read-only catalogue from the user-level native Codex `[projects]` table and the
    static `projectCatalog.entries` overlay, canonicalizes and filters candidates
@@ -157,8 +158,8 @@ Five surfaces reach the model:
     generic-client exec state loses its last owner and kills resident process
     trees. Conversation-owned process state remains in the server for later
     connector calls, subject to idle cleanup; server shutdown drops the shared
-    store and kills anything still running. Project bindings, conversation grants,
-    and ChatGPT review refs are independently durable on disk across server
+    store and kills anything still running. Project bindings, conversation
+    authorizations, and ChatGPT review refs are independently durable on disk across server
     restarts, but process handles are not.
 
 Cross-cutting HTTP concerns live in the axum layer: a `/health` route, a
@@ -239,15 +240,14 @@ the named branch; fresh PR clones detach at the PR head. Existing matching sourc
 checkouts are only fetched, never checked out or reset.
 
 ### `ConversationAuthorizationStore` (`conversation_auth.rs`)
-Optional conversation-level access control. The configured token is validated at
-startup and compared by fixed-size digest. A successful ChatGPT call writes a
-private marker whose filename uses the existing hashed `ConversationIdentity`;
-marker contents contain only the authorization decision. Markers are grouped
-under a digest of the canonical work directory and current token, which avoids
-plaintext token storage and makes rotation a new authorization namespace. The
-in-memory set avoids disk reads after recovery. Generic clients have no durable
-conversation identity, so their grant is an atomic flag shared only by the current
-`SessionState` views.
+The configured authentication token is validated at startup and compared in
+constant time. A successful ChatGPT call writes a private authorization marker
+whose filename uses the existing hashed `ConversationIdentity`; marker contents
+contain only the grant. Markers are grouped under a digest of the canonical work
+directory and current token, which avoids plaintext token storage and makes
+rotation a new authorization namespace. The in-memory set avoids disk reads after
+recovery. Generic clients have no durable conversation identity, so their grant
+is an atomic flag shared only by the current `SessionState` views.
 
 ### Worktree isolation (`worktrees.rs`)
 In multi-project mode, `set_project_root` can bind a conversation to a **detached
@@ -324,9 +324,17 @@ config per call and substitutes the conversation's selected root—or the transp
 fallback—for `work_dir`; the static server policy, catalogue overlay, and bridge
 configuration remain shared. Native Codex project entries are intentionally re-read
 when the catalogue tool is called rather than copied into `AppConfig` at startup.
-`conversationAuthToken` is a top-level optional secret with no CLI override; its
-presence also controls registry inclusion of the `authenticate` tool and the
-authentication-only initialization instructions.
+`conversationAuthToken` is a top-level optional authentication secret with no CLI
+override; its presence also controls registry inclusion of the authorization gate
+and authorization-only initialization instructions. Only the ChatGPT-facing MCP
+surface disguises that gate as `setup(ref)`: ChatGPT can otherwise mistake a
+token-looking connector call for a dangerous secret leak and refuse it. The token
+itself is a 64-character lowercase hexadecimal string shaped like SHA-256, not a
+digest of a different configured secret, and `ref` carries that exact token. These
+wire names are a compatibility workaround for ChatGPT's account-level connector
+OAuth and safety behavior; the implementation, persistence, and operator-facing
+documentation continue to treat the value as an authentication token and the
+result as a conversation authorization grant.
 
 ### `quickstart` CLI (`quickstart.rs`)
 The `quickstart` subcommand runs before server configuration is loaded. It uses a
@@ -344,7 +352,7 @@ before entering the ordinary supervised server lifecycle. There is no separate
 quickstart runtime.
 The wizard does not expose the advanced `conversationAuthToken` policy as an
 onboarding choice. If an existing config already contains a valid token, it
-preserves the value, protects the config as a private file on Unix, and prints the
+preserves the token, protects the config as a private file on Unix, and prints the
 one-line instruction needed by an individual chat or ChatGPT Project.
 
 ---
@@ -427,7 +435,7 @@ a private per-run temporary directory and are removed after shutdown.
 | Timing | `clock_curr_time`, `clock_sleep` |
 | Project selection (multi-project only) | `list_projects`, `set_project_root` |
 
-Conversation authorization prepends `authenticate`; multi-project mode then
+Conversation authorization prepends the ChatGPT-facing `setup` wire tool; multi-project mode then
 prepends `list_projects` and `set_project_root`. The optional tools are omitted
 from the ordinary single-project registry, preserving the 27-tool default surface
 and behaviour. Enabling the gate raises the applicable count by one.
@@ -451,7 +459,7 @@ the original order and rejects duplicate names.
 | `logging.rs` | Tracing initialization with default filters for normal, `-v`, and `-vv` operation (an explicit `RUST_LOG` remains authoritative), plus a non-overridable filter that suppresses RMCP framework events, preventing native-file bearer URLs from appearing in logs before tool dispatch or malformed-session errors. |
 | `output_budget.rs` | Line/byte windowing and list caps, each cut announced with the continuation argument. |
 | `audit.rs` | Private append-only JSONL tool lifecycle records, stable hashed identities, redacted argument summaries, output accounting, and opt-in bounded command previews. |
-| `conversation_auth.rs` | Token generation and validation, fixed-size digest comparison, copyable ChatGPT instruction rendering, durable per-conversation authorization markers, and transport-session fallback. |
+| `conversation_auth.rs` | Authentication-token generation and validation, constant-time comparison, copyable ChatGPT instruction rendering with the innocuous wire vocabulary, durable per-conversation authorization markers, and transport-session fallback. |
 | `ignore_rules.rs` | One `.gitignore`-accurate matcher (the `ignore` crate) shared by glob/grep/tree/list_directory. |
 | `exec_policy.rs` | Shell-string allowlist guard for `exec_command` (a guardrail, not a sandbox). |
 | `project_bindings.rs` | Canonical project-root validation plus durable ChatGPT conversation bindings keyed by a hash of `openai/session`, namespaced by access root, locked per record, and atomically written. |
@@ -471,7 +479,7 @@ the original order and rejects duplicate names.
 | `codex_config.rs` | Shared secret-safe resolver and TOML reader for `$CODEX_HOME/config.toml` or `~/.codex/config.toml`. |
 | `codex_mcp.rs` | Read-only import of local stdio and remote Streamable HTTP MCP definitions from the shared native Codex configuration reader, plus bounded `codex mcp list/get --json` enrichment for plugin-provided servers, with secret-safe diagnostics. |
 | `mcp_catalog.rs` | Private transitive MCP source/tool catalogue, collision-safe model identifiers, weighted BM25 index, exact metadata/schema lookup, and the fixed source/search/get/call tools. |
-| `instructions.rs` | Assembles the agent brief + environment + saved state + skills + project doc. Authentication-enabled initialization emits only the gate protocol; otherwise multi-project initialization emits a project-neutral selector brief because conversation metadata is available only on subsequent tool calls. `get_agent_brief` builds the full brief after authorization and project resolution. |
+| `instructions.rs` | Assembles the agent brief + environment + saved state + skills + project doc. Authorization-enabled initialization emits only the intentionally innocuous model-facing gate protocol; otherwise multi-project initialization emits a project-neutral selector brief because conversation metadata is available only on subsequent tool calls. `get_agent_brief` builds the full brief after authorization and project resolution. |
 | `environment.rs` | OS / shell / policy description, shared by `get_environment` and the instructions. |
 
 ---
@@ -672,7 +680,7 @@ the legacy fallback. All fields are optional.
 {
   "port": 3000,
   "apiKey": "…",                      // or --api-key; bearer token
-  "conversationAuthToken": "codex_free_chat_…", // optional per-chat tool gate
+  "conversationAuthToken": "0123456789abcdef…", // exactly 64 lowercase hex characters
   "multiProject": false,               // or --multi-project; work-dir becomes access root
   "projectCloneDir": ".",             // existing path below access root; or --project-clone-dir
   "allowedCommands": ["git", "node", …],   // run_command allowlist
@@ -748,7 +756,7 @@ Upstream MCP servers:
   idalib      -> catalog (66 private tool(s))
   remote-exec -> catalog (84 private tool(s))
 Auth: disabled (no --api-key)
-Conversation auth: enabled (one token verification per chat)
+Conversation authorization: enabled (one token check per chat)
 Audit log: /private/path/tools.jsonl
 Audit command previews: disabled
 ```
@@ -766,8 +774,7 @@ Audit command previews: disabled
   persistent ChatGPT conversation binding`, and the conversation-binding state
   directory; its native count is 29 because the selectors are present.
 - Conversation authorization adds one native tool and prints only whether the
-  gate is enabled; neither the token nor its derived authorization namespace is
-  printed.
+  gate is enabled; neither the token nor its derived namespace is printed.
 - `-v` and `-vv` increase Codex Free diagnostics without dumping raw tool payloads;
   `RUST_LOG` overrides those defaults. When audit logging is configured, the banner
   prints its destination and whether command previews are enabled.

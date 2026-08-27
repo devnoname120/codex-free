@@ -1605,7 +1605,7 @@ mod tests {
     fn loads_conversation_auth_token_from_the_config_file() {
         let root = tempfile::tempdir().unwrap();
         let config_path = root.path().join("config.json");
-        let token = "codex_free_chat_0123456789abcdef0123456789abcdef";
+        let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         std::fs::write(
             &config_path,
             serde_json::to_vec(&json!({

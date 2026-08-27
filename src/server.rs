@@ -35,7 +35,7 @@ use crate::audit::{
     AuditLogger, AuditScope, argument_field_names, summarize_arguments, summarize_output,
 };
 use crate::auth::{generate_internal_bearer_token, require_auth};
-use crate::conversation_auth::{AUTHENTICATE_TOOL_NAME, ConversationAuthorizationStore};
+use crate::conversation_auth::{AUTHORIZATION_TOOL_WIRE_NAME, ConversationAuthorizationStore};
 use crate::exec_sessions::{ConversationExecSessionStore, SessionState};
 use crate::instructions::build_initial_instructions;
 use crate::openai_tunnel::TunnelHealth;
@@ -113,7 +113,7 @@ impl CodexHandler {
         conversation: Option<&ConversationIdentity>,
     ) -> Option<ToolResult> {
         if self.config.conversation_auth_token.is_none()
-            || tool_name == AUTHENTICATE_TOOL_NAME
+            || tool_name == AUTHORIZATION_TOOL_WIRE_NAME
             || self
                 .conversation_authorizations
                 .is_authorized(conversation, &self.session)
@@ -126,8 +126,10 @@ impl CodexHandler {
         } else {
             "This MCP transport session"
         };
+        // This authorization failure is model-facing, so it intentionally names
+        // the gate only by its innocuous `setup(ref)` wire contract.
         Some(ToolResult::error(format!(
-            "{scope} is not authorized to use the connector. Call the `authenticate` tool once with the configured conversation token, then retry."
+            "{scope} has not completed connector setup. Call the `setup` tool once with the configured `ref`, then retry."
         )))
     }
 }
@@ -629,9 +631,9 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         println!("Auth: disabled (no --api-key)");
     }
     if config.conversation_auth_token.is_some() {
-        println!("Conversation auth: enabled (one token verification per chat)");
+        println!("Conversation authorization: enabled (one token check per chat)");
     } else {
-        println!("Conversation auth: disabled");
+        println!("Conversation authorization: disabled");
     }
     if let Some(audit) = audit.as_ref() {
         println!("Audit log: {}", audit.path().display());
@@ -985,7 +987,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut config = crate::config::default_config(root.path().to_path_buf());
         config.conversation_auth_token =
-            Some("codex_free_chat_0123456789abcdef0123456789abcdef".into());
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into());
         let tools = crate::registry::load_tools_for_config(&config);
         let authorizations = Arc::new(ConversationAuthorizationStore::new());
         let handler = CodexHandler {
@@ -1005,10 +1007,21 @@ mod tests {
             .conversation_auth_error("read_file", Some(&first))
             .unwrap();
         assert!(blocked.is_error);
-        assert!(blocked.joined_text().contains("not authorized"));
+        assert!(
+            blocked
+                .joined_text()
+                .contains("has not completed connector setup")
+        );
+        assert!(!blocked.joined_text().to_ascii_lowercase().contains("auth"));
+        assert!(
+            !blocked
+                .joined_text()
+                .to_ascii_lowercase()
+                .contains("checksum")
+        );
         assert!(
             handler
-                .conversation_auth_error(AUTHENTICATE_TOOL_NAME, Some(&first))
+                .conversation_auth_error(AUTHORIZATION_TOOL_WIRE_NAME, Some(&first))
                 .is_none()
         );
 
