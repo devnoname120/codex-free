@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Native project-file egress through `export_host_file`. The tool snapshots one
+  project-relative regular file and returns a standard MCP `resource_link`; the
+  connector host retrieves the immutable bytes through `resources/read` instead
+  of receiving a machine-local path or model-visible base64 payload.
+- `artifactEgress` configuration, enabled by default, for the per-file byte limit,
+  process-wide cached-byte and live-reference bounds, and opaque resource lifetime.
+
 ### Changed
 
 - The `show_changes` MCP app now uses a compact, single-line file list with
@@ -13,6 +22,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sets, and smaller explicitly sized monospace patch text across web and native
   mobile/desktop hosts. Patch panes remain horizontally scrollable without
   expanding the host card, and generated Git diffs use the histogram algorithm.
+
+### Security
+
+- Exported files are opened through a capability-confined active-project root,
+  with traversal, absolute paths, symlink escapes, non-regular files, and growth
+  past the configured limit rejected. Each result is an owned immutable snapshot
+  behind a random 256-bit short-lived capability; cache eviction and restart
+  invalidate references, and audit records never include their URIs or filenames.
 
 ## [1.7.0] - 2026-08-26
 
