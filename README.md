@@ -281,7 +281,12 @@ Each release ships a compiled binary per platform — `windows-x64`, `linux-x64`
 | `--api-key` | No | - | Bearer token for auth |
 | `--config` | No | `CODEX_FREE_CONFIG`, user config, then legacy `./codex.config.json` | Explicit config file path. The user config is `~/.codex-free/codex.config.json`; relative explicit paths resolve from the startup directory, and a missing file is tolerated |
 | `--codex-cli` | No | Auto when available | Require successful Codex CLI-backed MCP discovery. When omitted, failure produces a warning and direct `config.toml` parsing remains the fallback |
-| `-v`, `--verbose` | No | Info logs | Enable Codex Free debug diagnostics; repeat (`-vv`) for trace diagnostics (`--log-tool-calls` is an alias) |
+| `-v`, `--verbose` | No | Info logs | Enable Codex Free debug diagnostics; repeat (`-vv`) for trace diagnostics (`--log-tool-calls` remains an alias) |
+| `--log-tool-payloads[=<MODE>]` | No | `off` | Emit paired tool invocation lifecycle events with bounded, redacted payloads. `MODE` is `requests`, `responses`, or `all`; omitting it selects `all` |
+| `--tool-log-level <LEVEL>` | No | `info` | Severity for tool invocation events: `trace`, `debug`, `info`, `warn`, or `error` |
+| `--tool-log-max-request-bytes <BYTES>` | No | `2048` | Maximum UTF-8 bytes retained from each redacted request payload (`64`-`65536`) |
+| `--tool-log-max-response-bytes <BYTES>` | No | `4096` | Maximum UTF-8 bytes retained from each redacted response payload (`64`-`65536`) |
+| `--tool-log-redact-env <NAME>` | No | - | Redact the current value of an environment variable from tool payload logs; repeat for multiple names |
 | `--audit <FILE>` | No | Disabled | Append privacy-preserving tool activity events to a JSONL file (`--audit-log` is an alias) |
 | `--audit-command-preview` | No | Disabled | Add bounded, redacted previews for `exec_command` and `run_command` to the audit log |
 | `--audit-redact-env <NAME>` | No | - | Redact the current value of an environment variable from command previews; repeat for multiple names |
@@ -461,6 +466,13 @@ an existing config keeps working.
   "review": {
     "maxPatchBytes": 4194304
   },
+  "toolLogging": {
+    "mode": "off",
+    "level": "info",
+    "maxRequestBytes": 2048,
+    "maxResponseBytes": 4096,
+    "redactEnv": []
+  },
   "audit": {
     "logFile": null,
     "includeCommandPreview": false,
@@ -524,14 +536,59 @@ repository-local path, add it to the repository's ignore rules. On Unix,
 quickstart changes the config mode to `0600` when it preserves a token-bearing
 config; manually created configs should be protected equivalently.
 
-## Diagnostics and audit logging
+## Diagnostics, tool payloads, and audit logging
 
-The default tracing level remains `info`. `-v` changes the default filter to `codex_free=debug,rmcp=warn`, which adds tool-start events, hashed conversation/project context, argument field names, duration, and output accounting without dumping protocol traffic. `-vv` changes Codex Free to `trace` while keeping `rmcp` at `warn`, and adds the fully redacted argument-shape summary. An explicit `RUST_LOG` value takes precedence over `-v`/`-vv` when protocol-level diagnostics are required:
+The default tracing level remains `info`. Every completed call names the downstream tool and, for a direct, gateway, or catalog-discovered MCP call, the resolved raw upstream server and tool. `-v` changes the default filter to `codex_free=debug,rmcp=warn`, which adds tool-start events, hashed conversation/project context, argument field names, duration, and output accounting without dumping payloads. `-vv` changes Codex Free to `trace` while keeping `rmcp` suppressed and adds the fully redacted argument-shape summary. An explicit `RUST_LOG` value takes precedence over the `-v`/`-vv` default filter, but rmcp protocol-internal events remain blocked because they may contain unbounded model or user content:
 
 ```bash
 codex-free -v --work-dir /path/to/project
 RUST_LOG=codex_free=trace,rmcp=warn codex-free --work-dir /path/to/project
 ```
+
+Actual tool requests and responses are a separate opt-in. It applies uniformly to native tools and all MCP exposure modes, rather than special-casing shell execution:
+
+```bash
+# Log both sides with the default 2 KiB request / 4 KiB response limits.
+codex-free --work-dir /path/to/project --log-tool-payloads
+
+# Log requests only with a larger preview and an additional local secret value.
+codex-free \
+  --work-dir /path/to/project \
+  --log-tool-payloads=requests \
+  --tool-log-max-request-bytes 8192 \
+  --tool-log-redact-env PRIVATE_REPOSITORY_TOKEN
+
+# Put the same paired events at debug severity.
+codex-free --work-dir /path/to/project --log-tool-payloads --tool-log-level debug
+```
+
+Every enabled mode emits exactly one start and one completion event with the same server-wide monotonic `call_id`; when audit JSONL is also enabled, it receives that same ID even under concurrent dispatch. The request and response toggles control payload inclusion independently without removing the lifecycle record. Completion includes `status` and `duration_ms`. Payload fields contain compact JSON previews, an observed serialized byte count, whether that count is exact, and explicit truncation and serializer-failure flags. When exact size is available, the event also reports the omitted byte count. Serialization stops as soon as the configured prefix budget is full, then appends `...[truncated]...` at a UTF-8 boundary. It does not clone, traverse, or serialize the unseen remainder merely to measure it.
+
+Short representative events look like this (timestamps and unrelated tracing fields omitted):
+
+```text
+INFO codex_free::tool_payload: tool invocation started call_id=12 phase="start" tool="read_file" resolved_tool="read_file" status="started" request="{\"path\":\"src/lib.rs\"}"
+INFO codex_free::tool_payload: tool invocation completed call_id=12 phase="finish" tool="read_file" resolved_tool="read_file" status="ok" duration_ms=2 response="{\"content\":[{\"type\":\"text\",\"text\":\"...\"}],\"isError\":false}"
+INFO codex_free::tool_payload: tool invocation started call_id=13 phase="start" tool="mcp_call_tool" resolved_tool="mcp:IDA MCP/decompile_function" mcp_server="IDA MCP" mcp_tool="decompile_function" status="started" request="{\"source\":\"ida_mcp\",\"tool\":\"decompile_function\",\"arguments\":{\"address\":\"0x81000000\"}}"
+```
+
+MCP arguments and structured results are `serde_json::Value`, so null, arrays, maps, and scalar JSON values retain their compact structure; undefined values, circular references, and other non-JSON runtime objects cannot cross this Rust boundary. An unexpected serialization failure produces a bounded `[unserializable payload]` marker and cannot change the tool result. MCP image content blocks are represented only by MIME type and base64 byte count; their base64 data is never written to these logs. Resource links retain redacted descriptive metadata but replace the URI with an omission marker and its byte count, so opaque download capabilities are not persisted.
+
+MCP dispatchers also emit `resolved_tool`, `mcp_server`, and `mcp_tool`. These contain the raw configured server name and raw upstream tool name even when the downstream capability is a generic gateway or `mcp_call_tool`; model-visible catalog IDs remain available in the request preview. The ordinary info-level completion event carries the same resolved identity even when payload logging is disabled.
+
+Payloads are redacted lazily before their bytes reach the bounded serializer. Codex Free removes configured API/conversation credentials, credential-labelled and nontrivial MCP environment/HTTP-header values, resolved MCP bearer/header environment variables, the OpenAI tunnel key when readable, common secret-bearing process environment variables, values named through `toolLogging.redactEnv` / `--tool-log-redact-env`, input fields marked `writeOnly` or `format: "password"` by the tool schema, secret/checksum-labelled JSON fields, signed native-file `download_url` and `file_id` values, signed-URL query parameters, and common command-line/header credential syntax. This is defense in depth, not proof that arbitrary source text or tool output contains no unknown sensitive literal. JSON has no raw byte-buffer type, so image blocks and resource capabilities receive explicit safe representations; an application-specific base64 string in an otherwise ordinary text field is inside the operator trust boundary. Tool payload logging is therefore disabled by default and should be treated as sensitive operational data.
+
+The `toolLogging` config block provides the same controls:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mode` | `"off"` | `off`, `requests`, `responses`, or `all` |
+| `level` | `"info"` | Event severity: `trace`, `debug`, `info`, `warn`, or `error` |
+| `maxRequestBytes` | `2048` | Maximum UTF-8 bytes retained from each redacted request; accepted range is `64`-`65536` |
+| `maxResponseBytes` | `4096` | Maximum UTF-8 bytes retained from each redacted response; accepted range is `64`-`65536` |
+| `redactEnv` | `[]` | Environment-variable names whose current values must be removed from payloads |
+
+CLI mode, level, and byte-limit options replace their corresponding config values. Repeated `--tool-log-redact-env` values are merged with `toolLogging.redactEnv` so a CLI invocation cannot accidentally remove configured redactions. Payload events use the `codex_free::tool_payload` tracing target at the selected level, so an explicit restrictive `RUST_LOG` filter can suppress them without incurring payload serialization work; when that happens, the ordinary info-level completion event remains available instead of silently removing all call visibility. Events go through the established tracing subscriber (stdout in the current HTTP server); they are never written to a bridged upstream's protocol pipe or to the downstream Streamable HTTP response. The pre-existing `--log-tool-calls` alias deliberately remains equivalent to `-v`; it does not opt an existing deployment into retaining payloads.
 
 Audit logging is separate from diagnostic tracing and is disabled unless a file is configured:
 
@@ -541,7 +598,7 @@ codex-free \
   --audit ~/.codex-free/audit/tools.jsonl
 ```
 
-The append-only JSONL stream begins with `audit_started`, which identifies the server version, OS process, random run ID, and command-preview policy, then emits `tool_start` and `tool_finish` records. Tool records carry an RFC 3339 timestamp, monotonic call ID, transport-session ID, hashed ChatGPT conversation and project identifiers, tool name, duration, status, argument shape, returned byte/token counts, truncation status when the tool can report it, and resident `exec_command` session/PID metadata. Argument summaries include only fields declared by the tool's input schema; unknown keys and dynamic maps are counted but their key names are omitted. Raw conversation identifiers, project paths, scalar argument values, image data, structured output, and returned text are not written.
+The append-only JSONL stream begins with `audit_started`, which identifies the server version, OS process, random run ID, and command-preview policy, then emits schema-version-2 `tool_start` and `tool_finish` records. Tool records carry an RFC 3339 timestamp, monotonic call ID, transport-session ID, hashed ChatGPT conversation and project identifiers, downstream and resolved tool identities (including raw MCP server/tool names), duration, status, argument shape, returned byte/token counts, truncation status when the tool can report it, and resident `exec_command` session/PID metadata. Argument summaries include only fields declared by the tool's input schema; unknown keys and dynamic maps are counted but their key names are omitted. Raw conversation identifiers, project paths, scalar argument values, image data, structured output, and returned text are not written.
 
 Command previews are a separate opt-in because shell commands can contain credentials, source code, paths, and environment values:
 
@@ -1277,6 +1334,7 @@ Native tunnel mode ignores `allowedHosts` and forces the accepted authorities to
 - **Tunnel secrets are references, not config values**: `openaiTunnel.apiKeyRef` accepts only `env:NAME` or `file:/path`; literal API keys are rejected. Codex Free resolves the value and exposes it only to the tunnel child under a synthetic environment name, while the child receives a clean, allowlisted environment. Use a restricted runtime key with Tunnels **Read** + **Use**, not an admin key. Private key-file permissions are enforced on Unix. Same-user process inspection and same-user file access remain outside this boundary.
 - **Optional bearer token auth in non-native mode**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests except `/health`. Native mode instead owns its private per-process bearer token. ChatGPT Plugins do not support simple bearer token auth for URL-based connectors.
 - **Host allowlist**: set `allowedHosts` to pin the accepted `Host` header for DNS-rebinding protection. See [Host allowlist](#host-allowlist).
+- **Tool payload logging is explicitly sensitive**: `toolLogging` / `--log-tool-payloads` can retain source code, paths, commands, model output, and data returned by delegated MCP servers. Redaction removes configured and heuristically recognized credentials before byte-bounded truncation; MCP image content-block base64 and resource-link capability URIs are always omitted. Arbitrary sensitive literals still cannot be identified perfectly. Leave the mode `off` unless the operational visibility is worth that exposure, and protect the process logs accordingly.
 - **Audit records exclude payloads by default**: `--audit` writes hashes, timings, result sizes, and redacted argument shape rather than source, file paths, credentials, or returned output. Command previews require a separate opt-in and remain potentially sensitive even after configured and heuristic redaction, so protect the audit file as operational data.
 
 The allowlist is a **guardrail against accidents, not a sandbox**. It catches a model reaching for `curl` or `rm -rf`; it does not contain a determined one. The defaults already include `node`, `python` and `cargo`, each of which runs arbitrary code — `node -e "..."` can do anything the server process can. Shell redirection and explicit absolute or parent paths can also reach outside the active project root even though each command starts with that root as its cwd. Multi-project selection isolates Codex Free's structured tools and logical per-conversation project state; it is not an operating-system sandbox. Treat everything below as reachable by whoever is authorized to use the configured connector or external endpoint:

@@ -14,6 +14,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checkout.
 - `output.maxToolOutputTokens`, defaulting to 10,000 approximate tokens, as a
   connector-wide ceiling for textual model-visible tool results.
+- Configurable all-tool payload tracing through `toolLogging` and
+  `--log-tool-payloads[=<MODE>]`. Native, direct MCP, gateway MCP, and catalog MCP
+  calls now emit paired start/completion events with monotonic call IDs, selectable
+  severity, resolved raw upstream server/tool names, mandatory secret and checksum
+  redaction, MCP image content-block and resource-capability elision, and
+  independently work-bounded UTF-8 request/response previews. Audit JSONL records
+  use the same resolved identity fields.
 
 ### Changed
 

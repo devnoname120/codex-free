@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::{Router, extract::State, response::Json, routing::get};
@@ -47,7 +48,8 @@ use crate::project_bindings::{ConversationIdentity, ProjectBindingStore};
 use crate::registry::load_tools_for_config;
 use crate::review::{ReviewAvailability, ReviewCheckpointManager, ReviewOwner};
 use crate::review_ui;
-use crate::tool::{Tool, ToolRequestContext};
+use crate::tool::{Tool, ToolCallIdentity, ToolRequestContext};
+use crate::tool_logging::ToolCallLogger;
 use crate::tools::set_project_root::{SetProjectRoot, select_and_render};
 use crate::types::{AppConfig, ToolContent, ToolResult};
 
@@ -81,6 +83,8 @@ pub struct CodexHandler {
     review_checkpoints: Arc<ReviewCheckpointManager>,
     artifact_egress: Arc<ArtifactEgressStore>,
     audit: Option<Arc<AuditLogger>>,
+    tool_logging: Option<Arc<ToolCallLogger>>,
+    next_tool_call_id: Arc<AtomicU64>,
     session: SessionState,
 }
 
@@ -299,6 +303,7 @@ impl ServerHandler for CodexHandler {
         });
         let name = request.name.as_ref().to_string();
         let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
+        let call_id = self.next_tool_call_id.fetch_add(1, Ordering::Relaxed);
         let tool_context = ToolRequestContext {
             conversation: conversation.clone(),
             conversation_authorizations: self.conversation_authorizations.clone(),
@@ -310,25 +315,41 @@ impl ServerHandler for CodexHandler {
         // Keep `tool` as an Option so that even an unknown-tool call flows through
         // the audit begin/finish pairing below rather than short-circuiting.
         let tool = self.tools.iter().find(|t| t.name() == name);
+        let call_identity = tool
+            .map(|tool| tool.call_identity(&args))
+            .unwrap_or_else(|| ToolCallIdentity::native(name.clone()));
 
         // Verbose-diagnostics / audit preamble (#15). `needs_scope` gates the cost
         // of building an audit scope and argument summaries to the cases that will
         // actually consume them.
         let needs_scope = self.audit.is_some()
             || tracing::enabled!(target: "codex_free::tool", tracing::Level::DEBUG);
-        let input_schema = needs_scope
+        let needs_input_schema = needs_scope
+            || self
+                .tool_logging
+                .as_ref()
+                .is_some_and(|logger| logger.logs_requests());
+        let input_schema = needs_input_schema
             .then(|| tool.map(|tool| tool.input_schema()))
             .flatten();
+        let tool_log_call = self
+            .tool_logging
+            .as_ref()
+            .map(|logger| logger.begin(call_id, &call_identity, &args, input_schema.as_ref()));
         let start_scope = needs_scope.then(|| self.audit_scope(conversation.as_ref()));
         let audit_call = self.audit.as_ref().and_then(|audit| {
-            start_scope
-                .as_ref()
-                .map(|scope| audit.begin_tool(&name, &args, input_schema.as_ref(), scope))
+            start_scope.as_ref().map(|scope| {
+                audit.begin_tool(call_id, &call_identity, &args, input_schema.as_ref(), scope)
+            })
         });
         if let Some(scope) = start_scope.as_ref() {
             tracing::debug!(
                 target: "codex_free::tool",
+                call_id,
                 tool = %name,
+                resolved_tool = %call_identity.resolved_tool(),
+                mcp_server = call_identity.mcp_server.as_deref().unwrap_or("-"),
+                mcp_tool = call_identity.mcp_tool.as_deref().unwrap_or("-"),
                 transport_session_id = scope.transport_session_id,
                 conversation_id = scope.conversation_id.as_deref().unwrap_or("-"),
                 project_id = scope.project_id.as_deref().unwrap_or("-"),
@@ -339,7 +360,11 @@ impl ServerHandler for CodexHandler {
         if tracing::enabled!(target: "codex_free::tool", tracing::Level::TRACE) {
             tracing::trace!(
                 target: "codex_free::tool",
+                call_id,
                 tool = %name,
+                resolved_tool = %call_identity.resolved_tool(),
+                mcp_server = call_identity.mcp_server.as_deref().unwrap_or("-"),
+                mcp_tool = call_identity.mcp_tool.as_deref().unwrap_or("-"),
                 argument_summary = %summarize_arguments(&args, input_schema.as_ref()),
                 "tool arguments summarized"
             );
@@ -464,17 +489,33 @@ impl ServerHandler for CodexHandler {
         finalize_model_visible_result(tool.map(|tool| tool.as_ref()), &mut result, &self.config);
 
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        tracing::info!(
-            target: "codex_free::tool",
-            tool = %name,
-            status = if result.is_error { "error" } else { "ok" },
-            duration_ms,
-            "tool completed"
-        );
+        if let (Some(logger), Some(call)) = (&self.tool_logging, tool_log_call.as_ref()) {
+            logger.finish(call, &call_identity, &result, duration_ms);
+        }
+        if !tool_log_call
+            .as_ref()
+            .is_some_and(|call| call.events_enabled())
+        {
+            tracing::info!(
+                target: "codex_free::tool",
+                call_id,
+                tool = %name,
+                resolved_tool = %call_identity.resolved_tool(),
+                mcp_server = call_identity.mcp_server.as_deref().unwrap_or("-"),
+                mcp_tool = call_identity.mcp_tool.as_deref().unwrap_or("-"),
+                status = if result.is_error { "error" } else { "ok" },
+                duration_ms,
+                "tool completed"
+            );
+        }
         if tracing::enabled!(target: "codex_free::tool", tracing::Level::DEBUG) {
             tracing::debug!(
                 target: "codex_free::tool",
+                call_id,
                 tool = %name,
+                resolved_tool = %call_identity.resolved_tool(),
+                mcp_server = call_identity.mcp_server.as_deref().unwrap_or("-"),
+                mcp_tool = call_identity.mcp_tool.as_deref().unwrap_or("-"),
                 output_summary = %summarize_output(&result),
                 "tool output summarized"
             );
@@ -484,9 +525,9 @@ impl ServerHandler for CodexHandler {
         {
             if name == SetProjectRoot::NAME {
                 let finish_scope = self.audit_scope(conversation.as_ref());
-                audit.finish_tool(call, &name, &result, duration_ms, &finish_scope);
+                audit.finish_tool(call, &call_identity, &result, duration_ms, &finish_scope);
             } else {
-                audit.finish_tool(call, &name, &result, duration_ms, start_scope);
+                audit.finish_tool(call, &call_identity, &result, duration_ms, start_scope);
             }
         }
         Ok(to_call_tool_result(result).into())
@@ -507,6 +548,8 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         config.api_key = Some(generate_internal_bearer_token()?);
     }
     let audit = AuditLogger::open(&config)?.map(Arc::new);
+    let tool_logging = ToolCallLogger::new(&config).map(Arc::new);
+    let next_tool_call_id = Arc::new(AtomicU64::new(1));
     // Gateway-mode upstreams write their generated skills here; keyed by port so
     // concurrent instances don't clobber each other, and rebuilt fresh per start.
     let gen_dir = std::env::temp_dir()
@@ -590,6 +633,8 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
     let factory_review_checkpoints = review_checkpoints.clone();
     let factory_artifact_egress = artifact_egress.clone();
     let factory_audit = audit.clone();
+    let factory_tool_logging = tool_logging.clone();
+    let factory_next_tool_call_id = next_tool_call_id.clone();
     let service = StreamableHttpService::new(
         move || {
             let session = SessionState::new();
@@ -603,6 +648,8 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
                 review_checkpoints: factory_review_checkpoints.clone(),
                 artifact_egress: factory_artifact_egress.clone(),
                 audit: factory_audit.clone(),
+                tool_logging: factory_tool_logging.clone(),
+                next_tool_call_id: factory_next_tool_call_id.clone(),
                 session,
             })
         },
@@ -677,6 +724,17 @@ pub async fn start_http_server(mut config: AppConfig) -> anyhow::Result<()> {
         println!("Conversation authorization: enabled (one token check per chat)");
     } else {
         println!("Conversation authorization: disabled");
+    }
+    if let Some(logger) = tool_logging.as_ref() {
+        println!(
+            "Tool payload logging: {} at {} (requests <= {} bytes, responses <= {} bytes; redacted)",
+            logger.mode().as_str(),
+            logger.level().as_str(),
+            logger.max_request_bytes(),
+            logger.max_response_bytes()
+        );
+    } else {
+        println!("Tool payload logging: disabled");
     }
     if let Some(audit) = audit.as_ref() {
         println!("Audit log: {}", audit.path().display());
@@ -997,7 +1055,312 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fmt;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use rmcp::ServiceExt;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
+
     use super::*;
+
+    struct NewlyRegisteredTool {
+        name: &'static str,
+        answer: &'static str,
+        is_error: bool,
+    }
+
+    #[async_trait]
+    impl Tool for NewlyRegisteredTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> String {
+            "A tool registered only by the dispatch-boundary regression test.".to_string()
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" },
+                    "private": { "type": "string", "writeOnly": true }
+                },
+                "required": ["value"],
+                "additionalProperties": false
+            })
+        }
+
+        fn requires_project_root(&self) -> bool {
+            false
+        }
+
+        async fn call(
+            &self,
+            _args: Value,
+            _config: &AppConfig,
+            _session: &SessionState,
+        ) -> ToolResult {
+            if self.is_error {
+                ToolResult::error(self.answer)
+            } else {
+                ToolResult::text(self.answer)
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ToolPayloadCapture {
+        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
+        ordinary_info_completions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<S> Layer<S> for ToolPayloadCapture
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().target() == "codex_free::tool"
+                && *event.metadata().level() == tracing::Level::INFO
+            {
+                self.ordinary_info_completions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if event.metadata().target() != "codex_free::tool_payload" {
+                return;
+            }
+            let mut fields = HashMap::new();
+            event.record(&mut ToolPayloadFieldVisitor(&mut fields));
+            self.events.lock().unwrap().push(fields);
+        }
+    }
+
+    struct ToolPayloadFieldVisitor<'a>(&'a mut HashMap<String, String>);
+
+    impl Visit for ToolPayloadFieldVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    fn handler_with_tools(
+        root: &std::path::Path,
+        tools: Vec<Box<dyn Tool>>,
+        tool_log_level: crate::types::ToolLogLevel,
+    ) -> CodexHandler {
+        let mut config = crate::config::default_config(root.to_path_buf());
+        config.tool_logging.mode = crate::types::ToolLogMode::All;
+        config.tool_logging.level = tool_log_level;
+        config.audit.log_file = Some(root.join("audit.jsonl"));
+        let tool_logging = ToolCallLogger::new(&config).map(Arc::new);
+        let audit = AuditLogger::open(&config).unwrap().map(Arc::new);
+        CodexHandler {
+            config: Arc::new(config),
+            tools: Arc::new(tools),
+            project_bindings: Arc::new(ProjectBindingStore::new(root.join("bindings"))),
+            conversation_authorizations: Arc::new(ConversationAuthorizationStore::new()),
+            conversation_exec_sessions: Arc::new(ConversationExecSessionStore::new()),
+            review_checkpoints: Arc::new(ReviewCheckpointManager::new()),
+            artifact_egress: Arc::new(ArtifactEgressStore::new(
+                crate::types::ArtifactEgressConfig::default(),
+            )),
+            audit,
+            tool_logging,
+            next_tool_call_id: Arc::new(AtomicU64::new(1)),
+            session: SessionState::new(),
+        }
+    }
+
+    #[test]
+    fn common_dispatch_boundary_observes_new_tools_and_preserves_results() {
+        let root = tempfile::tempdir().unwrap();
+        let handler = handler_with_tools(
+            root.path(),
+            vec![
+                Box::new(NewlyRegisteredTool {
+                    name: "new_success_fixture",
+                    answer: "unchanged success answer",
+                    is_error: false,
+                }),
+                Box::new(NewlyRegisteredTool {
+                    name: "new_failure_fixture",
+                    answer: "unchanged failure answer",
+                    is_error: true,
+                }),
+            ],
+            crate::types::ToolLogLevel::Info,
+        );
+        let capture = ToolPayloadCapture::default();
+        let events = capture.events.clone();
+        let ordinary_info_completions = capture.ordinary_info_completions.clone();
+        let subscriber = Registry::default().with(capture);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let (success, failure) = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async move {
+                let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+                let server_task = tokio::spawn(async move {
+                    handler
+                        .serve(server_transport)
+                        .await
+                        .unwrap()
+                        .waiting()
+                        .await
+                        .unwrap();
+                });
+                let client = ().serve(client_transport).await.unwrap();
+                let arguments = json!({
+                    "value": "visible request",
+                    "private": "schema-protected request"
+                })
+                .as_object()
+                .unwrap()
+                .clone();
+                let success = client
+                    .call_tool(
+                        CallToolRequestParams::new("new_success_fixture")
+                            .with_arguments(arguments.clone()),
+                    )
+                    .await
+                    .unwrap();
+                let failure = client
+                    .call_tool(
+                        CallToolRequestParams::new("new_failure_fixture").with_arguments(arguments),
+                    )
+                    .await
+                    .unwrap();
+                client.cancel().await.unwrap();
+                server_task.await.unwrap();
+                (success, failure)
+            })
+        });
+
+        assert_eq!(success.is_error, Some(false));
+        assert_eq!(
+            success.content[0].as_text().unwrap().text,
+            "unchanged success answer"
+        );
+        assert_eq!(failure.is_error, Some(true));
+        assert_eq!(
+            failure.content[0].as_text().unwrap().text,
+            "unchanged failure answer"
+        );
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            ordinary_info_completions.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "payload observation must replace, not duplicate, the ordinary info completion"
+        );
+        for pair in events.as_chunks::<2>().0 {
+            assert_eq!(pair[0]["phase"], "start");
+            assert_eq!(pair[1]["phase"], "finish");
+            assert_eq!(pair[0]["call_id"], pair[1]["call_id"]);
+            assert_eq!(pair[0]["resolved_tool"], pair[0]["tool"]);
+            assert!(pair[0]["request"].contains("visible request"));
+            assert!(!pair[0]["request"].contains("schema-protected request"));
+        }
+        assert_eq!(events[1]["status"], "ok");
+        assert!(events[1]["response"].contains("unchanged success answer"));
+        assert_eq!(events[3]["status"], "error");
+        assert!(events[3]["response"].contains("unchanged failure answer"));
+        let payload_call_ids = events
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| pair[0]["call_id"].parse::<u64>().unwrap())
+            .collect::<Vec<_>>();
+        drop(events);
+
+        let audit_events = std::fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
+        let audit_events = audit_events
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let audit_call_ids = audit_events
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| pair[0]["call_id"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(payload_call_ids, audit_call_ids);
+    }
+
+    #[test]
+    fn filtered_payload_level_falls_back_to_the_ordinary_completion_event() {
+        let root = tempfile::tempdir().unwrap();
+        let handler = handler_with_tools(
+            root.path(),
+            vec![Box::new(NewlyRegisteredTool {
+                name: "filtered_payload_fixture",
+                answer: "ordinary completion remains visible",
+                is_error: false,
+            })],
+            crate::types::ToolLogLevel::Debug,
+        );
+        let capture = ToolPayloadCapture::default();
+        let events = capture.events.clone();
+        let ordinary_info_completions = capture.ordinary_info_completions.clone();
+        let subscriber = Registry::default().with(capture).with(LevelFilter::INFO);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async move {
+                let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+                let server_task = tokio::spawn(async move {
+                    handler
+                        .serve(server_transport)
+                        .await
+                        .unwrap()
+                        .waiting()
+                        .await
+                        .unwrap();
+                });
+                let client = ().serve(client_transport).await.unwrap();
+                let result = client
+                    .call_tool(CallToolRequestParams::new("filtered_payload_fixture"))
+                    .await
+                    .unwrap();
+                client.cancel().await.unwrap();
+                server_task.await.unwrap();
+                result
+            })
+        });
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(
+            ordinary_info_completions.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
 
     #[test]
     fn advertises_review_resources_and_mcp_apps_extension() {
@@ -1013,6 +1376,8 @@ mod tests {
                 crate::types::ArtifactEgressConfig::default(),
             )),
             audit: None,
+            tool_logging: None,
+            next_tool_call_id: Arc::new(AtomicU64::new(1)),
             session: SessionState::new(),
         };
 
@@ -1047,6 +1412,8 @@ mod tests {
                 crate::types::ArtifactEgressConfig::default(),
             )),
             audit: None,
+            tool_logging: None,
+            next_tool_call_id: Arc::new(AtomicU64::new(1)),
             session: SessionState::new(),
         };
         let first = ConversationIdentity::from_openai_session("first-chat").unwrap();

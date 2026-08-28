@@ -4,25 +4,23 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, bail};
 use chrono::{SecondsFormat, Utc};
-use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
 use crate::exec_sessions::approx_token_count;
 use crate::project_bindings::ConversationIdentity;
+use crate::redaction::SecretRedactor;
+use crate::tool::ToolCallIdentity;
 use crate::types::{AppConfig, ToolContent, ToolResult};
 
-const SCHEMA_VERSION: u64 = 1;
+const SCHEMA_VERSION: u64 = 2;
 const HASH_HEX_CHARS: usize = 24;
 const MAX_ARGUMENT_FIELDS: usize = 64;
 const MAX_ARGUMENT_DEPTH: usize = 3;
-const MAX_REFERENCED_SECRET_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AuditScope {
@@ -55,12 +53,10 @@ pub(crate) struct AuditCall {
 pub(crate) struct AuditLogger {
     path: PathBuf,
     run_id: String,
-    next_call_id: AtomicU64,
     file: Mutex<File>,
     include_command_preview: bool,
     command_preview_max_bytes: usize,
-    secrets: Zeroizing<Vec<String>>,
-    secret_patterns: Vec<(Regex, &'static str)>,
+    redactor: Option<SecretRedactor>,
 }
 
 impl AuditLogger {
@@ -70,20 +66,14 @@ impl AuditLogger {
         };
         let file = open_private_append(&path)?;
         let include_command_preview = config.audit.include_command_preview;
-        let (secrets, secret_patterns) = if include_command_preview {
-            (collect_secret_values(config), secret_patterns())
-        } else {
-            (Zeroizing::new(Vec::new()), Vec::new())
-        };
+        let redactor = include_command_preview.then(|| SecretRedactor::for_audit(config));
         let logger = Self {
             path,
             run_id: random_id()?,
-            next_call_id: AtomicU64::new(1),
             file: Mutex::new(file),
             include_command_preview,
             command_preview_max_bytes: config.audit.command_preview_max_bytes,
-            secrets,
-            secret_patterns,
+            redactor,
         };
         logger.write_event(&json!({
             "schema_version": SCHEMA_VERSION,
@@ -108,14 +98,13 @@ impl AuditLogger {
 
     pub(crate) fn begin_tool(
         &self,
-        tool: &str,
+        call_id: u64,
+        identity: &ToolCallIdentity,
         arguments: &Value,
         input_schema: Option<&Value>,
         scope: &AuditScope,
     ) -> AuditCall {
-        let call = AuditCall {
-            id: self.next_call_id.fetch_add(1, Ordering::Relaxed),
-        };
+        let call = AuditCall { id: call_id };
         let mut event = Map::from_iter([
             ("schema_version".to_string(), json!(SCHEMA_VERSION)),
             ("timestamp".to_string(), json!(timestamp())),
@@ -129,13 +118,16 @@ impl AuditLogger {
             ("conversation_id".to_string(), json!(scope.conversation_id)),
             ("access_root_id".to_string(), json!(scope.access_root_id)),
             ("project_id".to_string(), json!(scope.project_id)),
-            ("tool".to_string(), json!(tool)),
+            ("tool".to_string(), json!(identity.downstream_tool)),
+            ("resolved_tool".to_string(), json!(identity.resolved_tool())),
+            ("mcp_server".to_string(), json!(identity.mcp_server)),
+            ("mcp_tool".to_string(), json!(identity.mcp_tool)),
             (
                 "argument_summary".to_string(),
                 summarize_arguments(arguments, input_schema),
             ),
         ]);
-        if let Some(preview) = self.command_preview(tool, arguments) {
+        if let Some(preview) = self.command_preview(&identity.downstream_tool, arguments) {
             event.insert("command_preview".to_string(), json!(preview));
         }
         self.record(Value::Object(event));
@@ -145,7 +137,7 @@ impl AuditLogger {
     pub(crate) fn finish_tool(
         &self,
         call: &AuditCall,
-        tool: &str,
+        identity: &ToolCallIdentity,
         result: &ToolResult,
         duration_ms: u64,
         scope: &AuditScope,
@@ -160,7 +152,10 @@ impl AuditLogger {
             "conversation_id": scope.conversation_id,
             "access_root_id": scope.access_root_id,
             "project_id": scope.project_id,
-            "tool": tool,
+            "tool": identity.downstream_tool,
+            "resolved_tool": identity.resolved_tool(),
+            "mcp_server": identity.mcp_server,
+            "mcp_tool": identity.mcp_tool,
             "duration_ms": duration_ms,
             "status": if result.is_error { "error" } else { "ok" },
             "output": summarize_output(result),
@@ -173,49 +168,31 @@ impl AuditLogger {
         }
         match tool {
             "exec_command" => {
-                let raw = arguments.get("cmd")?.as_str()?.replace('\0', "\u{fffd}");
+                let raw = arguments.get("cmd")?.as_str()?;
                 Some(bound_utf8(
-                    &self.redact_command(&raw),
+                    &self
+                        .redactor
+                        .as_ref()?
+                        .redact_text_preview(raw, self.command_preview_max_bytes),
                     self.command_preview_max_bytes,
                 ))
             }
             "run_command" => {
                 let command = arguments.get("command")?.as_str()?;
-                let mut argv = vec![command.to_string()];
-                if let Some(values) = arguments.get("args").and_then(Value::as_array) {
-                    argv.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
-                }
-                let redacted = self.redact_argv(&argv);
-                let preview = serde_json::to_string(&redacted).ok()?;
+                let additional = arguments
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str);
+                let preview = self.redactor.as_ref()?.redact_argv_preview(
+                    std::iter::once(command).chain(additional),
+                    self.command_preview_max_bytes,
+                );
                 Some(bound_utf8(&preview, self.command_preview_max_bytes))
             }
             _ => None,
         }
-    }
-
-    fn redact_command(&self, command: &str) -> String {
-        let mut redacted = command.to_string();
-        for secret in self.secrets.iter() {
-            redacted = redacted.replace(secret, "[REDACTED]");
-        }
-        for (pattern, replacement) in &self.secret_patterns {
-            redacted = pattern.replace_all(&redacted, *replacement).into_owned();
-        }
-        redacted
-    }
-
-    fn redact_argv(&self, argv: &[String]) -> Vec<String> {
-        let mut redact_next = false;
-        argv.iter()
-            .map(|argument| {
-                if redact_next {
-                    redact_next = false;
-                    return "[REDACTED]".to_string();
-                }
-                redact_next = secret_flag_takes_next(argument);
-                self.redact_command(&argument.replace('\0', "\u{fffd}"))
-            })
-            .collect()
     }
 
     fn record(&self, event: Value) {
@@ -502,116 +479,6 @@ fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn collect_secret_values(config: &AppConfig) -> Zeroizing<Vec<String>> {
-    let mut values = Vec::new();
-    if let Some(api_key) = config.api_key.as_deref() {
-        push_secret(&mut values, api_key, false);
-    }
-    if let Some(token) = config.conversation_auth_token.as_deref() {
-        push_secret(&mut values, token, false);
-    }
-    for server in config.mcp_servers.values() {
-        for value in server.env.values() {
-            push_secret(&mut values, value, false);
-        }
-    }
-    for name in &config.audit.redact_env {
-        if let Ok(value) = std::env::var(name) {
-            push_secret(&mut values, &value, false);
-        }
-    }
-    for (name, value) in std::env::vars_os() {
-        if let (Some(name), Some(value)) = (name.to_str(), value.to_str())
-            && secret_env_name(name)
-        {
-            push_secret(&mut values, value, true);
-        }
-    }
-    if let Some(tunnel) = config.openai_tunnel.as_ref() {
-        if let Some(name) = tunnel.api_key_ref.strip_prefix("env:") {
-            if let Ok(value) = std::env::var(name) {
-                push_secret(&mut values, &value, false);
-            }
-        } else if let Some(path) = tunnel.api_key_ref.strip_prefix("file:") {
-            let path = Path::new(path);
-            if std::fs::metadata(path).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.len() <= MAX_REFERENCED_SECRET_BYTES
-            }) && let Ok(value) = std::fs::read_to_string(path)
-            {
-                push_secret(&mut values, value.trim(), false);
-            }
-        }
-    }
-    values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-    values.dedup();
-    Zeroizing::new(values)
-}
-
-fn push_secret(values: &mut Vec<String>, value: &str, automatic: bool) {
-    if !value.is_empty() && (!automatic || value.len() >= 8) {
-        values.push(value.to_string());
-    }
-}
-
-fn secret_env_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    [
-        "secret",
-        "token",
-        "password",
-        "passphrase",
-        "credential",
-        "authorization",
-        "cookie",
-        "api_key",
-        "apikey",
-        "private_key",
-    ]
-    .iter()
-    .any(|fragment| normalized.contains(fragment))
-}
-
-fn secret_flag_takes_next(argument: &str) -> bool {
-    if !argument.starts_with('-') || argument.contains('=') {
-        return false;
-    }
-    let name = argument.trim_start_matches('-').to_ascii_lowercase();
-    matches!(name.as_str(), "u" | "user" | "proxy-user") || secret_env_name(&name)
-}
-
-fn secret_patterns() -> Vec<(Regex, &'static str)> {
-    [
-        (
-            r#"(?i)([\"']?(?:authorization|proxy-authorization)[\"']?\s*:\s*[\"']?(?:bearer|basic)\s+)[^\s'\";]+"#,
-            "$1[REDACTED]",
-        ),
-        (
-            r#"(?i)(\bbearer\s+)[A-Za-z0-9._~+/-]+=*"#,
-            "$1[REDACTED]",
-        ),
-        (
-            r#"(?i)((?:^|\s)--?[A-Za-z0-9_-]*(?:api[-_]?key|token|secret|password|passphrase|authorization|credential)[A-Za-z0-9_-]*(?:=|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s;]+)"#,
-            "$1[REDACTED]",
-        ),
-        (
-            r#"(?i)(\b[A-Za-z0-9_]*(?:api[_-]?key|token|secret|password|passphrase|authorization|credential)[A-Za-z0-9_]*\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s;]+)"#,
-            "$1[REDACTED]",
-        ),
-        (
-            r#"(?i)([\"']?[A-Za-z0-9_-]*(?:api[-_]?key|token|secret|password|passphrase|credential)[A-Za-z0-9_-]*[\"']?\s*:\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"#,
-            "$1[REDACTED]",
-        ),
-    ]
-    .into_iter()
-    .map(|(pattern, replacement)| {
-        (
-            Regex::new(pattern).expect("static audit redaction regex"),
-            replacement,
-        )
-    })
-    .collect()
-}
-
 fn bound_utf8(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_string();
@@ -793,7 +660,11 @@ mod tests {
         config.conversation_auth_token =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into());
         let logger = AuditLogger::open(&config).unwrap().unwrap();
-        let redacted = logger.redact_command(
+        let redacted = logger
+            .redactor
+            .as_ref()
+            .unwrap()
+            .redact_text(
             "tool --github-token prefixed-token OPENAI_API_KEY=assigned-key literal-known-secret 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \"api_key\": \"json-secret\" Authorization: Basic basic-token Bearer abc.def",
         );
         assert!(!redacted.contains("prefixed-token"));
@@ -852,9 +723,10 @@ mod tests {
                 "workdir": { "type": "string" }
             }
         });
-        let call = logger.begin_tool("exec_command", &arguments, Some(&schema), &scope);
+        let identity = ToolCallIdentity::native("exec_command");
+        let call = logger.begin_tool(1, &identity, &arguments, Some(&schema), &scope);
         let result = ToolResult::text("returned sensitive output").with_truncation(true);
-        logger.finish_tool(&call, "exec_command", &result, 17, &scope);
+        logger.finish_tool(&call, &identity, &result, 17, &scope);
         drop(logger);
 
         let contents = std::fs::read_to_string(path).unwrap();
@@ -872,9 +744,45 @@ mod tests {
         assert!(events[0]["server_process_id"].as_u64().is_some());
         assert_eq!(events[1]["event"], "tool_start");
         assert_eq!(events[2]["event"], "tool_finish");
+        assert_eq!(events[1]["schema_version"], 2);
+        assert_eq!(events[1]["tool"], "exec_command");
+        assert_eq!(events[1]["resolved_tool"], "exec_command");
+        assert!(events[1]["mcp_server"].is_null());
+        assert!(events[1]["mcp_tool"].is_null());
         assert_eq!(events[2]["duration_ms"], 17);
         assert_eq!(events[2]["output"]["truncated"], true);
         assert_eq!(events[2]["output"]["text_bytes"], 25);
+    }
+
+    #[test]
+    fn audit_records_raw_mcp_identity_for_dispatchers() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audit.jsonl");
+        let mut config = default_config(root.path().to_path_buf());
+        config.audit.log_file = Some(path.clone());
+        let logger = AuditLogger::open(&config).unwrap().unwrap();
+        let scope = AuditScope::new(1, None, root.path(), None);
+        let identity = ToolCallIdentity::mcp(
+            "mcp_call_tool",
+            "IDA MCP!",
+            Some("decompile_function".to_string()),
+        );
+
+        let call = logger.begin_tool(1, &identity, &json!({}), None, &scope);
+        logger.finish_tool(&call, &identity, &ToolResult::text("ok"), 1, &scope);
+        drop(logger);
+
+        let events = std::fs::read_to_string(path).unwrap();
+        let events = events
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        for event in &events[1..] {
+            assert_eq!(event["tool"], "mcp_call_tool");
+            assert_eq!(event["resolved_tool"], "mcp:IDA MCP!/decompile_function");
+            assert_eq!(event["mcp_server"], "IDA MCP!");
+            assert_eq!(event["mcp_tool"], "decompile_function");
+        }
     }
 
     #[test]

@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 use crate::exec_sessions::SessionState;
 use crate::mcp_catalog::{CatalogSourceInput, build_catalog_tools};
 use crate::process_env::scrub_untrusted_child_env;
-use crate::tool::{Tool, ToolRequestContext};
+use crate::tool::{Tool, ToolCallIdentity, ToolRequestContext};
 use crate::types::{AppConfig, McpToolExposure, ToolContent, ToolResult};
 
 /// How long to wait for an upstream to start up and answer `tools/list` before
@@ -119,6 +119,14 @@ impl Tool for BridgedTool {
 
     fn input_schema(&self) -> Value {
         self.input_schema.clone()
+    }
+
+    fn call_identity(&self, _args: &Value) -> ToolCallIdentity {
+        ToolCallIdentity::mcp(
+            self.name(),
+            self.server.clone(),
+            Some(self.original_name.clone()),
+        )
     }
 
     fn output_schema(&self) -> Option<Value> {
@@ -601,6 +609,16 @@ impl Tool for GatewayTool {
             "required": ["function"],
             "additionalProperties": false
         })
+    }
+
+    fn call_identity(&self, args: &Value) -> ToolCallIdentity {
+        ToolCallIdentity::mcp(
+            self.name(),
+            self.server.clone(),
+            args.get("function")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )
     }
 
     fn fills_structured_content(&self) -> bool {
@@ -1463,6 +1481,16 @@ mod tests {
         );
         let source_id = listed["sources"][0]["id"].as_str().unwrap().to_string();
         assert_eq!(source_id, "IDA_MCP_");
+        let unresolved_identity = bridge_tool(&bridge, MCP_CALL_TOOL).call_identity(&json!({
+            "source": source_id,
+            "tool": "unknown-tool-id"
+        }));
+        assert_eq!(unresolved_identity.mcp_server.as_deref(), Some("IDA MCP!"));
+        assert_eq!(unresolved_identity.mcp_tool, None);
+        assert_eq!(
+            unresolved_identity.resolved_tool(),
+            "mcp:IDA MCP!/<unresolved>"
+        );
 
         let filtered_sources = call_bridge_tool(
             &bridge,
@@ -1500,6 +1528,14 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
+        let identity = bridge_tool(&bridge, MCP_CALL_TOOL).call_identity(&json!({
+            "source": source_id,
+            "tool": decompile_id
+        }));
+        assert_eq!(identity.downstream_tool, MCP_CALL_TOOL);
+        assert_eq!(identity.mcp_server.as_deref(), Some("IDA MCP!"));
+        assert_eq!(identity.mcp_tool.as_deref(), Some("decompile_function"));
+        assert_eq!(identity.resolved_tool(), "mcp:IDA MCP!/decompile_function");
 
         let definition = call_bridge_tool(
             &bridge,
@@ -1843,6 +1879,12 @@ mod tests {
             Some(&Value::String("hex-rays".to_string()))
         );
         assert!(decompile.output_schema().is_some());
+        let identity = decompile.call_identity(&json!({
+            "location": { "virtual_address": "0xDEADBEEF" }
+        }));
+        assert_eq!(identity.downstream_tool, "IDA_MCP___decompile_function");
+        assert_eq!(identity.mcp_server.as_deref(), Some("IDA MCP!"));
+        assert_eq!(identity.mcp_tool.as_deref(), Some("decompile_function"));
 
         let result = call_bridge_tool(
             &bridge,
@@ -1886,6 +1928,13 @@ mod tests {
         assert_eq!(bridge.tools.len(), 1);
         assert_eq!(bridge.tools[0].name(), "IDA_MCP_");
         assert!(generated.path().join("IDA MCP!").join("SKILL.md").is_file());
+        let identity = bridge_tool(&bridge, "IDA_MCP_").call_identity(&json!({
+            "function": "rename-function",
+            "arguments": { "value": "new_name" }
+        }));
+        assert_eq!(identity.downstream_tool, "IDA_MCP_");
+        assert_eq!(identity.mcp_server.as_deref(), Some("IDA MCP!"));
+        assert_eq!(identity.mcp_tool.as_deref(), Some("rename-function"));
 
         let result = call_bridge_tool(
             &bridge,

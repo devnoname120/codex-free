@@ -42,6 +42,13 @@
   "review": {
     "maxPatchBytes": 4194304
   },
+  "toolLogging": {
+    "mode": "off",
+    "level": "info",
+    "maxRequestBytes": 2048,
+    "maxResponseBytes": 4096,
+    "redactEnv": []
+  },
   "audit": {
     "logFile": null,
     "includeCommandPreview": false,
