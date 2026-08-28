@@ -1,0 +1,13 @@
+{
+  "implementation": {
+    "status": "failed",
+    "error": "Integrity verification failed: reported worktree does not exist",
+    "review_notes": [
+      "Automated integrity verification: failed: reported worktree does not exist"
+    ]
+  },
+  "review": {
+    "status": "skipped",
+    "error": "implementation agent did not report completion"
+  }
+}
