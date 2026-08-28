@@ -24,9 +24,9 @@ use crate::openai_tunnel::validate_tunnel_id;
 use crate::project_catalog::{ProjectCatalog, discover_project_catalog_at};
 use crate::types::{
     AppConfig, ArtifactEgressConfig, ArtifactIngressConfig, AuditConfig, CodexProjectCatalogConfig,
-    CommandConfig, ConversationAuthToken, ExecConfig, ExecMode, IgnoreConfig, McpServerSpec,
-    McpToolExposure, MemoryConfig, OpenAiTunnelConfig, OutputConfig, ProjectCatalogConfig,
-    ProjectCatalogEntryConfig, ProjectDocConfig, ReviewConfig, SkillsConfig, ToolLogLevel,
+    CommandConfig, ConversationAuthToken, DiffConfig, ExecConfig, ExecMode, IgnoreConfig,
+    McpServerSpec, McpToolExposure, MemoryConfig, OpenAiTunnelConfig, OutputConfig,
+    ProjectCatalogConfig, ProjectCatalogEntryConfig, ProjectDocConfig, SkillsConfig, ToolLogLevel,
     ToolLogMode, ToolLoggingConfig, TreeConfig, WorktreeConfig, WorktreeMode,
     WorktreeUpstreamRefreshMode,
 };
@@ -508,7 +508,8 @@ struct FileConfig {
     exec: Option<PartialExec>,
     project_doc: Option<ProjectDocConfig>,
     output: Option<OutputConfig>,
-    review: Option<ReviewConfig>,
+    #[serde(alias = "review")]
+    diff: Option<DiffConfig>,
     artifact_ingress: Option<ArtifactIngressConfig>,
     artifact_egress: Option<ArtifactEgressConfig>,
     memory: Option<MemoryConfig>,
@@ -707,7 +708,7 @@ pub fn default_config(work_dir: std::path::PathBuf) -> AppConfig {
         exec: default_exec(),
         project_doc: ProjectDocConfig::default(),
         output: OutputConfig::default(),
-        review: ReviewConfig::default(),
+        diff: DiffConfig::default(),
         artifact_ingress: ArtifactIngressConfig::default(),
         artifact_egress: ArtifactEgressConfig::default(),
         memory: MemoryConfig::default(),
@@ -1434,7 +1435,7 @@ pub fn load_config(cli: Cli) -> Result<AppConfig, String> {
         exec,
         project_doc: file.project_doc.unwrap_or_default(),
         output,
-        review: file.review.unwrap_or_default(),
+        diff: file.diff.unwrap_or_default(),
         artifact_ingress,
         artifact_egress,
         memory: file.memory.unwrap_or_default(),
@@ -2337,16 +2338,20 @@ mod tests {
     }
 
     #[test]
-    fn review_config_accepts_an_empty_block_and_camel_case_override() {
-        let empty: FileConfig = serde_json::from_str(r#"{"review":{}}"#).unwrap();
+    fn diff_config_accepts_current_and_legacy_keys() {
+        let empty: FileConfig = serde_json::from_str(r#"{"diff":{}}"#).unwrap();
         assert_eq!(
-            empty.review.unwrap().max_patch_bytes,
-            crate::types::DEFAULT_REVIEW_MAX_PATCH_BYTES
+            empty.diff.unwrap().max_patch_bytes,
+            crate::types::DEFAULT_DIFF_MAX_PATCH_BYTES
         );
 
         let configured: FileConfig =
-            serde_json::from_str(r#"{"review":{"maxPatchBytes":1234}}"#).unwrap();
-        assert_eq!(configured.review.unwrap().max_patch_bytes, 1234);
+            serde_json::from_str(r#"{"diff":{"maxPatchBytes":1234}}"#).unwrap();
+        assert_eq!(configured.diff.unwrap().max_patch_bytes, 1234);
+
+        let legacy: FileConfig =
+            serde_json::from_str(r#"{"review":{"maxPatchBytes":4321}}"#).unwrap();
+        assert_eq!(legacy.diff.unwrap().max_patch_bytes, 4321);
     }
 
     #[test]
