@@ -197,7 +197,7 @@ impl ServerHandler for CodexHandler {
         );
         capabilities.extensions = Some(extensions);
         InitializeResult::new(capabilities)
-            .with_server_info(Implementation::new("codex-free", "1.7.0"))
+            .with_server_info(Implementation::new("codex-free", "1.8.0"))
             .with_instructions(build_initial_instructions(&self.config))
     }
 
