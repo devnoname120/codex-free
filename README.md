@@ -281,7 +281,11 @@ Each release ships a compiled binary per platform — `windows-x64`, `linux-x64`
 | `--api-key` | No | - | Bearer token for auth |
 | `--config` | No | `CODEX_FREE_CONFIG`, user config, then legacy `./codex.config.json` | Explicit config file path. The user config is `~/.codex-free/codex.config.json`; relative explicit paths resolve from the startup directory, and a missing file is tolerated |
 | `--codex-cli` | No | Auto when available | Require successful Codex CLI-backed MCP discovery. When omitted, failure produces a warning and direct `config.toml` parsing remains the fallback |
-| `-v`, `--verbose` | No | Info logs | Enable Codex Free debug diagnostics; repeat (`-vv`) for trace diagnostics (`--log-tool-calls` is an alias) |
+| `-v`, `--verbose` | No | Info logs | Enable Codex Free debug diagnostics; repeat (`-vv`) for trace diagnostics (`--log-tool-calls` remains an alias) |
+| `--log-tool-payloads[=<MODE>]` | No | `off` | Log bounded, redacted tool request/response payloads at info level. `MODE` is `requests`, `responses`, or `all`; omitting it selects `all` |
+| `--tool-log-max-request-bytes <BYTES>` | No | `2048` | Maximum UTF-8 bytes retained from each redacted request payload (`1`-`65536`) |
+| `--tool-log-max-response-bytes <BYTES>` | No | `4096` | Maximum UTF-8 bytes retained from each redacted response payload (`1`-`65536`) |
+| `--tool-log-redact-env <NAME>` | No | - | Redact the current value of an environment variable from tool payload logs; repeat for multiple names |
 | `--audit <FILE>` | No | Disabled | Append privacy-preserving tool activity events to a JSONL file (`--audit-log` is an alias) |
 | `--audit-command-preview` | No | Disabled | Add bounded, redacted previews for `exec_command` and `run_command` to the audit log |
 | `--audit-redact-env <NAME>` | No | - | Redact the current value of an environment variable from command previews; repeat for multiple names |
@@ -461,6 +465,12 @@ an existing config keeps working.
   "review": {
     "maxPatchBytes": 4194304
   },
+  "toolLogging": {
+    "mode": "off",
+    "maxRequestBytes": 2048,
+    "maxResponseBytes": 4096,
+    "redactEnv": []
+  },
   "audit": {
     "logFile": null,
     "includeCommandPreview": false,
@@ -524,14 +534,45 @@ repository-local path, add it to the repository's ignore rules. On Unix,
 quickstart changes the config mode to `0600` when it preserves a token-bearing
 config; manually created configs should be protected equivalently.
 
-## Diagnostics and audit logging
+## Diagnostics, tool payloads, and audit logging
 
-The default tracing level remains `info`. `-v` changes the default filter to `codex_free=debug,rmcp=warn`, which adds tool-start events, hashed conversation/project context, argument field names, duration, and output accounting without dumping protocol traffic. `-vv` changes Codex Free to `trace` while keeping `rmcp` at `warn`, and adds the fully redacted argument-shape summary. An explicit `RUST_LOG` value takes precedence over `-v`/`-vv` when protocol-level diagnostics are required:
+The default tracing level remains `info`. Every completed call names the downstream tool and, for a direct, gateway, or catalog-discovered MCP call, the resolved raw upstream server and tool. `-v` changes the default filter to `codex_free=debug,rmcp=warn`, which adds tool-start events, hashed conversation/project context, argument field names, duration, and output accounting without dumping payloads. `-vv` changes Codex Free to `trace` while keeping `rmcp` suppressed and adds the fully redacted argument-shape summary. An explicit `RUST_LOG` value takes precedence over the `-v`/`-vv` default filter, but rmcp protocol-internal events remain blocked because they may contain unbounded model or user content:
 
 ```bash
 codex-free -v --work-dir /path/to/project
 RUST_LOG=codex_free=trace,rmcp=warn codex-free --work-dir /path/to/project
 ```
+
+Actual tool requests and responses are a separate opt-in. It applies uniformly to native tools and all MCP exposure modes, rather than special-casing shell execution:
+
+```bash
+# Log both sides with the default 2 KiB request / 4 KiB response limits.
+codex-free --work-dir /path/to/project --log-tool-payloads
+
+# Log requests only with a larger preview and an additional local secret value.
+codex-free \
+  --work-dir /path/to/project \
+  --log-tool-payloads=requests \
+  --tool-log-max-request-bytes 8192 \
+  --tool-log-redact-env PRIVATE_REPOSITORY_TOKEN
+```
+
+Each request/response event has a monotonic `call_id`, downstream `tool`, `status` and duration where applicable, the compact JSON payload preview, its serialized byte count, and whether the preview was truncated. Truncation is UTF-8 byte strict and keeps both the beginning and end around a `...[truncated]...` marker. MCP image content blocks are represented only by MIME type and base64 byte count; their base64 data is never written to these logs. Resource links retain descriptive metadata but replace the URI with an omission marker and its byte count, so opaque download capabilities are not persisted.
+
+MCP dispatchers also emit `resolved_tool`, `mcp_server`, and `mcp_tool`. These contain the raw configured server name and raw upstream tool name even when the downstream capability is a generic gateway or `mcp_call_tool`; model-visible catalog IDs remain available in the request preview. The ordinary info-level completion event carries the same resolved identity even when payload logging is disabled.
+
+Payloads are redacted before serialization and truncation. Codex Free removes configured API/conversation credentials, credential-labelled and nontrivial MCP environment/HTTP-header values, resolved MCP bearer/header environment variables, the OpenAI tunnel key when readable, common secret-bearing process environment variables, values named through `toolLogging.redactEnv` / `--tool-log-redact-env`, secret-labelled JSON fields, signed native-file `download_url` and `file_id` values, and common command-line/header credential syntax. This is defense in depth, not a proof that arbitrary source text or tool output contains no sensitive literal. Tool payload logging is therefore disabled by default and should be treated as sensitive operational data.
+
+The `toolLogging` config block provides the same controls:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mode` | `"off"` | `off`, `requests`, `responses`, or `all` |
+| `maxRequestBytes` | `2048` | Maximum UTF-8 bytes retained from each redacted request; accepted range is `1`-`65536` |
+| `maxResponseBytes` | `4096` | Maximum UTF-8 bytes retained from each redacted response; accepted range is `1`-`65536` |
+| `redactEnv` | `[]` | Environment-variable names whose current values must be removed from payloads |
+
+CLI mode and byte-limit options replace their corresponding config values. Repeated `--tool-log-redact-env` values are merged with `toolLogging.redactEnv` so a CLI invocation cannot accidentally remove configured redactions. Payload events use the `codex_free::tool_payload` tracing target at info level, so an explicit restrictive `RUST_LOG` filter can suppress them. The pre-existing `--log-tool-calls` alias deliberately remains equivalent to `-v`; it does not opt an existing deployment into retaining payloads.
 
 Audit logging is separate from diagnostic tracing and is disabled unless a file is configured:
 
@@ -1260,7 +1301,7 @@ Native tunnel mode ignores `allowedHosts` and forces the accepted authorities to
 - **Path traversal prevention**: every filesystem tool — including `apply_patch` and `view_image` — resolves paths through a guard that rejects anything outside the active project root. In multi-project mode, both catalogue discovery and `set_project_root` canonicalize the configured access root and candidate directory, so `..` and symlinks cannot expose or bind a project outside the access root.
 - **Stable server-config authority**: the implicit config is user-scoped at `~/.codex-free/codex.config.json`, so changing the launch directory does not normally change command, MCP-server, network, tunnel, or worktree policy. `--config` and `CODEX_FREE_CONFIG` remain explicit overrides. The old `./codex.config.json` behavior is retained only as a warned compatibility fallback when no user config exists.
 - **Bounded GitHub cloning and target fetching**: URL-based project selection accepts only normalized HTTPS/SSH repository roots plus HTTPS branch and PR URLs on `github.com`. It separates owner/repository identity from the exact checkout target, rejects embedded credentials, unsupported subpages, and non-GitHub/insecure transports, and disables interactive Git credential prompts. The configured clone directory is canonicalized inside the access root at startup and revalidated at use time. Resolution uses per-repository cross-process locks, bounded subprocess timeouts, private temporary clone destinations, remote verification, exact branch/PR refspecs, and collision refusal. Existing source checkouts are fetched without moving `HEAD`; a conversation already bound to another selection is rejected before the network/disk side effect.
-- **Host-authorized native-file ingress**: `import_host_file` accepts only ChatGPT's declared native-file object, rejects local source paths, constrains the download URL and every redirect hop to the configurable `artifactIngress.allowedHosts` allowlist (default `"*"`, which admits any public HTTPS host but never a loopback, private, link-local, unique-local, CGNAT, `localhost`, or metadata address), ignores ambient proxy credentials, and enforces whole-request, idle, size and concurrency limits. Its signed URL and file ID are never logged or returned: RMCP debug/trace payload logging is unconditionally suppressed even when `RUST_LOG` requests it. Destination publication uses a capability-confined directory handle, canonical-path and file-identity revalidation, a private partial file, SHA-256, and atomic no-overwrite linking so traversal, moved roots, symlink escapes, partial visibility and replacement races fail closed.
+- **Host-authorized native-file ingress**: `import_host_file` accepts only ChatGPT's declared native-file object, rejects local source paths, constrains the download URL and every redirect hop to the configurable `artifactIngress.allowedHosts` allowlist (default `"*"`, which admits any public HTTPS host but never a loopback, private, link-local, unique-local, CGNAT, `localhost`, or metadata address), ignores ambient proxy credentials, and enforces whole-request, idle, size and concurrency limits. Its signed URL and file ID are never returned. Raw RMCP debug/trace payload logging is unconditionally suppressed even when `RUST_LOG` requests it, and the explicit tool payload logger replaces both fields with `[REDACTED]` before serialization. Destination publication uses a capability-confined directory handle, canonical-path and file-identity revalidation, a private partial file, SHA-256, and atomic no-overwrite linking so traversal, moved roots, symlink escapes, partial visibility and replacement races fail closed.
 - **Bounded native-file egress**: `export_host_file` accepts only a relative regular-file path inside the active project, opens it through a capability-confined directory handle, rejects traversal and symlink escapes, enforces `artifactEgress.maxFileBytes` before and during the read, and returns a SHA-256 receipt plus a standard MCP resource link. The link carries a random 256-bit opaque capability rather than a local path. Its immutable bytes live only in a process-wide memory cache bounded by `maxCachedBytes`, `maxReferences` and `referenceTtlMs`; expired and evicted references fail closed, and audit output records only the number of resource links, never their URIs or filenames.
 - **One bounded exception in single-project mode**: [AGENTS.md](#agentsmd) discovery may read above `--work-dir`, up to the nearest `.git`. It is read-only, opens only `AGENTS.override.md`, `AGENTS.md` and any `projectDoc.fallbackFilenames`, and `get_project_doc` reports the absolute path of every file it used. Set `projectDoc.maxBytes` to `0` to switch it off, or `projectDoc.rootMarkers` to `[]` to keep the search inside the work directory. Multi-project mode does not perform this upward walk; its selected directory is the exact project root.
 - **Namespaced review state inside Git**: ChatGPT review checkpoints are exactly two refs per conversation/project pair under `refs/codex-free/review/`. Synthetic snapshots contain only the selected project path, are built through a temporary index, and never modify the real index or working tree. Generic MCP-client checkpoints are in memory only. The namespace grows with the number of distinct persistent conversation/project pairs; the review section documents inspection and manual removal.
@@ -1276,6 +1317,7 @@ Native tunnel mode ignores `allowedHosts` and forces the accepted authorities to
 - **Tunnel secrets are references, not config values**: `openaiTunnel.apiKeyRef` accepts only `env:NAME` or `file:/path`; literal API keys are rejected. Codex Free resolves the value and exposes it only to the tunnel child under a synthetic environment name, while the child receives a clean, allowlisted environment. Use a restricted runtime key with Tunnels **Read** + **Use**, not an admin key. Private key-file permissions are enforced on Unix. Same-user process inspection and same-user file access remain outside this boundary.
 - **Optional bearer token auth in non-native mode**: set `--api-key` to require an `Authorization: Bearer <key>` header on all requests except `/health`. Native mode instead owns its private per-process bearer token. ChatGPT Plugins do not support simple bearer token auth for URL-based connectors.
 - **Host allowlist**: set `allowedHosts` to pin the accepted `Host` header for DNS-rebinding protection. See [Host allowlist](#host-allowlist).
+- **Tool payload logging is explicitly sensitive**: `toolLogging` / `--log-tool-payloads` can retain source code, paths, commands, model output, and data returned by delegated MCP servers. Redaction removes configured and heuristically recognized credentials before byte-bounded truncation; MCP image content-block base64 and resource-link capability URIs are always omitted. Arbitrary sensitive literals still cannot be identified perfectly. Leave the mode `off` unless the operational visibility is worth that exposure, and protect the process logs accordingly.
 - **Audit records exclude payloads by default**: `--audit` writes hashes, timings, result sizes, and redacted argument shape rather than source, file paths, credentials, or returned output. Command previews require a separate opt-in and remain potentially sensitive even after configured and heuristic redaction, so protect the audit file as operational data.
 
 The allowlist is a **guardrail against accidents, not a sandbox**. It catches a model reaching for `curl` or `rm -rf`; it does not contain a determined one. The defaults already include `node`, `python` and `cargo`, each of which runs arbitrary code — `node -e "..."` can do anything the server process can. Shell redirection and explicit absolute or parent paths can also reach outside the active project root even though each command starts with that root as its cwd. Multi-project selection isolates Codex Free's structured tools and logical per-conversation project state; it is not an operating-system sandbox. Treat everything below as reachable by whoever is authorized to use the configured connector or external endpoint:
