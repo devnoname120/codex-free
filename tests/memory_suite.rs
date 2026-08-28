@@ -17,8 +17,10 @@ use codex_free::memory::{
     memory_max_bytes, memory_path, notes_bytes, remember, render_memory, save_plan,
 };
 use codex_free::tool::Tool;
+use codex_free::tools::forget_memory_note::ForgetMemoryNote;
 use codex_free::tools::recall::{NOTHING_REMEMBERED, Recall};
 use codex_free::tools::remember::Remember;
+use codex_free::tools::update_memory_note::UpdateMemoryNote;
 use codex_free::tools::update_plan::UpdatePlan;
 use codex_free::types::{AppConfig, PlanItem, PlanState, PlanStepStatus};
 
@@ -414,6 +416,56 @@ async fn remember_tool_stores_a_note() {
         load_memory(&config).notes.get("why-bun").unwrap().value,
         "The runtime ships a test runner."
     );
+}
+
+#[tokio::test]
+async fn split_memory_tools_create_update_and_delete_without_mixed_modes() {
+    let root = TempDir::new().unwrap();
+    let config = make_config(&root);
+    let session = SessionState::new();
+
+    let created = Remember
+        .call(
+            json!({ "key": "decision", "value": "first" }),
+            &config,
+            &session,
+        )
+        .await;
+    assert!(!created.is_error);
+    let duplicate = Remember
+        .call(
+            json!({ "key": "decision", "value": "second" }),
+            &config,
+            &session,
+        )
+        .await;
+    assert!(duplicate.is_error);
+    assert_eq!(load_memory(&config).notes["decision"].value, "first");
+
+    let updated = UpdateMemoryNote
+        .call(
+            json!({ "key": "decision", "value": "second" }),
+            &config,
+            &session,
+        )
+        .await;
+    assert!(!updated.is_error);
+    assert_eq!(load_memory(&config).notes["decision"].value, "second");
+    let repeated = UpdateMemoryNote
+        .call(
+            json!({ "key": "decision", "value": "second" }),
+            &config,
+            &session,
+        )
+        .await;
+    assert!(!repeated.is_error);
+    assert!(repeated.joined_text().contains("already has that value"));
+
+    let deleted = ForgetMemoryNote
+        .call(json!({ "key": "decision" }), &config, &session)
+        .await;
+    assert!(!deleted.is_error);
+    assert!(!load_memory(&config).notes.contains_key("decision"));
 }
 
 #[tokio::test]
