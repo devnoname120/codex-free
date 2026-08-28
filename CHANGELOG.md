@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Multi-project `set_project_root` now accepts HTTPS GitHub commit URLs
+  (`/commit/<sha>`). Full 40-character commit IDs are fetched and selected exactly,
+  using a detached clone or managed worktree without moving an existing source
+  checkout.
+
 ## [1.8.0] - 2026-08-28
 
 ### Added
